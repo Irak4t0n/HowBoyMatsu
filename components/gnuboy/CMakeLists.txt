@@ -31,4 +31,5 @@ INCLUDE_DIRS .
 )
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE "-DGNUBOY_NO_MINIZIP -DGNUBOY_NO_SCREENSHOT -DIS_LITTLE_ENDIAN -w")
+target_compile_options(${COMPONENT_LIB} PRIVATE -O2)
 

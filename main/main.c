@@ -105,31 +105,37 @@ void blit(void) {
     bsp_display_blit(0, 0, display_h_res, display_v_res, pax_buf_get_pixels(&fb_pax));
 }
 // Draw the GBC screen scaled up onto the Tanmatsu display
-void draw_gbc_screen(void) {
-    int logical_w = pax_buf_get_width(&fb_pax);
-    int logical_h = pax_buf_get_height(&fb_pax);
-    int offset_x  = (logical_w - GBC_WIDTH  * SCALE) / 2;
-    int offset_y  = (logical_h - GBC_HEIGHT * SCALE) / 2;
+static uint8_t scaled_row[800 * 3];
 
-    for (int y = 0; y < GBC_HEIGHT; y++) {
-        for (int x = 0; x < GBC_WIDTH; x++) {
-            uint16_t pixel = gbc_pixels[y * GBC_WIDTH + x];
+void draw_gbc_screen(void) {
+    const int H_SCALE = 5;
+    const int DSP_W   = 800;
+    const int DSP_H   = 480;
+    const int GBC_W   = 160;
+    const int GBC_H   = 144;
+
+    uint8_t *dst = display_buf;
+
+    for (int y = 0; y < GBC_H; y++) {
+        uint8_t *row_ptr = scaled_row;
+        for (int x = 0; x < GBC_W; x++) {
+            uint16_t pixel = gbc_pixels[y * GBC_W + x];
             uint8_t r = ((pixel >> 11) & 0x1F) << 3;
             uint8_t g = ((pixel >> 5)  & 0x3F) << 2;
             uint8_t b = ( pixel        & 0x1F) << 3;
-            uint32_t col = 0xFF000000 | (r << 16) | (g << 8) | b;
-            int base_x = offset_x + x * SCALE;
-            int base_y = offset_y + y * SCALE;
-            for (int sy = 0; sy < SCALE; sy++) {
-                for (int sx = 0; sx < SCALE; sx++) {
-                    pax_set_pixel_raw(&fb_pax, col,
-                                      base_x + sx, base_y + sy);
-                }
+            for (int sx = 0; sx < H_SCALE; sx++) {
+                *row_ptr++ = r;
+                *row_ptr++ = g;
+                *row_ptr++ = b;
             }
         }
+        int v_lines = ((y + 1) * DSP_H / GBC_H) - (y * DSP_H / GBC_H);
+        for (int rep = 0; rep < v_lines; rep++) {
+            memcpy(dst, scaled_row, DSP_W * 3);
+            dst += DSP_W * 3;
+        }
     }
-    bsp_display_blit(0, 0, display_h_res, display_v_res,
-                     pax_buf_get_pixels(&fb_pax));
+    bsp_display_blit(0, 0, DSP_W, DSP_H, display_buf);
 }
 // --- gnuboy platform callbacks ---
 void vid_preinit(void) {}
@@ -184,12 +190,12 @@ void vid_settitle(char *title) {
 
 // --- gnuboy audio callbacks (stub for now) ---
 void pcm_init(void)    {}
-int  pcm_submit(void)  { return 0; }
+int  pcm_submit(void)  { return 1; }
 void pcm_close(void)   {}
 
 // --- gnuboy system callbacks ---
 void sys_sleep(int us) {
-    vTaskDelay(pdMS_TO_TICKS(us / 1000));
+    (void)us;
 }
 
 void *sys_timer(void) { return NULL; }
