@@ -23,6 +23,8 @@
 #include "driver/sdmmc_host.h"
 #include "targets/tanmatsu/tanmatsu_hardware.h"
 #include "esp_heap_caps.h"
+#include "dirent.h"
+#include "sys/stat.h"
 
 // gnuboy headers
 #include "gnuboy.h"
@@ -43,6 +45,7 @@ uint8_t currentBuffer = 0;
 
 // Frame buffer that gnuboy's lcd.c writes scan lines into
 static uint16_t frame_buf[160 * 144];
+static uint8_t *display_buf = NULL;
 uint16_t* frame = frame_buf;
 
 // Export tables - stubs to satisfy the linker
@@ -98,25 +101,11 @@ void doevents(void);
 void blit(void) {
     bsp_display_blit(0, 0, display_h_res, display_v_res, pax_buf_get_pixels(&fb_pax));
 }
-
 // Draw the GBC screen scaled up onto the Tanmatsu display
 void draw_gbc_screen(void) {
-    int offset_x = (display_h_res - GBC_WIDTH  * SCALE) / 2;
-    int offset_y = (display_v_res - GBC_HEIGHT * SCALE) / 2;
-    for (int y = 0; y < GBC_HEIGHT; y++) {
-        for (int x = 0; x < GBC_WIDTH; x++) {
-            uint16_t pixel = gbc_pixels[y * GBC_WIDTH + x];
-            uint8_t r = ((pixel >> 11) & 0x1F) << 3;
-            uint8_t g = ((pixel >> 5)  & 0x3F) << 2;
-            uint8_t b = ( pixel        & 0x1F) << 3;
-            pax_col_t col = 0xFF000000 | (r << 16) | (g << 8) | b;
-            pax_simple_rect(&fb_pax, col,
-                offset_x + x * SCALE,
-                offset_y + y * SCALE,
-                SCALE, SCALE);
-        }
-    }
-    blit();
+    // Test: fill screen red using PAX
+    pax_background(&fb_pax, 0xFFFF0000);
+    bsp_display_blit(0, 0, display_h_res, display_v_res, pax_buf_get_pixels(&fb_pax));
 }
 
 // --- gnuboy platform callbacks ---
@@ -141,15 +130,20 @@ void vid_init(void) {
 void vid_close(void) {}
 
 void vid_begin(void) {
-    fb.dirty = 0;
+    fb.dirty = 1;
 }
 
 void vid_end(void) {
+    static int frame_count = 0;
+    frame_count++;
+    if (frame_count % 60 == 0) {
+        ESP_LOGI(TAG, "vid_end called, frame=%d, dirty=%d", frame_count, fb.dirty);
+    }
     if (fb.dirty) {
         draw_gbc_screen();
+        fb.dirty = 0;
     }
 }
-
 void vid_setpal(int i, int r, int g, int b) {
     (void)i; (void)r; (void)g; (void)b;
 }
@@ -230,9 +224,8 @@ void die(char *fmt, ...) {
 void emulator_task(void *arg) {
     ESP_LOGI(TAG, "Mounting SD card...");
 
-    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = SDMMC_HOST_SLOT_0;
-
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
     slot_config.clk = BSP_SDCARD_CLK;
     slot_config.cmd = BSP_SDCARD_CMD;
@@ -242,34 +235,31 @@ void emulator_task(void *arg) {
     slot_config.d3  = BSP_SDCARD_D3;
     slot_config.width = 4;
     slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
         .max_files = 5,
         .allocation_unit_size = 16 * 1024
     };
-
     sdmmc_card_t *card;
     esp_err_t ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to mount SD card: %s", esp_err_to_name(ret));
-        pax_background(&fb_pax, 0xFF000000);
-        pax_draw_text(&fb_pax, 0xFFFF0000, pax_font_sky_mono, 16, 10, 10, "SD Card mount failed!");
-        pax_draw_text(&fb_pax, 0xFFFFFFFF, pax_font_sky_mono, 12, 10, 40, "Check SD card is inserted");
-        pax_draw_text(&fb_pax, 0xFFAAAAAA, pax_font_sky_mono, 12, 10, 60, "Press F1 to return");
-        blit();
-        bsp_input_event_t event;
-        while (1) {
-            if (xQueueReceive(input_event_queue, &event, portMAX_DELAY) == pdTRUE) {
-                if (event.type == INPUT_EVENT_TYPE_NAVIGATION &&
-                    event.args_navigation.key == BSP_INPUT_NAVIGATION_KEY_F1) {
-                    bsp_device_restart_to_launcher();
-                }
-            }
-        }
+        bsp_device_restart_to_launcher();
     }
-
     ESP_LOGI(TAG, "SD card mounted at /sdcard");
+
+    // Diagnostic - list what's on the SD card
+  DIR *romsdir = opendir("/sdcard/roms");
+    if (romsdir) {
+        ESP_LOGI(TAG, "Contents of /sdcard/roms:");
+        struct dirent *entry;
+        while ((entry = readdir(romsdir)) != NULL) {
+            ESP_LOGI(TAG, "  %s", entry->d_name);
+        }
+        closedir(romsdir);
+    } else {
+        ESP_LOGE(TAG, "Cannot open /sdcard/roms directory!");
+    }
     ESP_LOGI(TAG, "Initializing gnuboy...");
 
     init_exports();
@@ -309,8 +299,23 @@ ESP_LOGI(TAG, "Loading ROM from %s", ROM_PATH);
     }
 
     // Get file size
+// Count file size by reading to end
+    size_t rom_length = 0;
+    char count_buf[512];
+    while (fread(count_buf, 1, sizeof(count_buf), rom_fd) > 0) {
+        rom_length += sizeof(count_buf);
+    }
+    // Correct for possible short last read
     fseek(rom_fd, 0, SEEK_END);
-    size_t rom_length = ftell(rom_fd);
+    rom_length = (size_t)ftell(rom_fd);
+    // If ftell still fails, use manual count
+    if (rom_length == 0) {
+        rewind(rom_fd);
+        size_t n;
+        rom_length = 0;
+        while ((n = fread(count_buf, 1, sizeof(count_buf), rom_fd)) > 0)
+            rom_length += n;
+    }
     fseek(rom_fd, 0, SEEK_SET);
     ESP_LOGI(TAG, "ROM size: %d bytes", rom_length);
 
@@ -398,7 +403,15 @@ void app_main(void) {
     pax_draw_text(&fb_pax, 0xFFFFFF00, pax_font_sky_mono, 12, 10, 120, "Loading ROM...");
     blit();
 
-    vTaskDelay(pdMS_TO_TICKS(500));
+vTaskDelay(pdMS_TO_TICKS(500));
+
+    // Allocate display buffer in PSRAM
+    display_buf = (uint8_t *)heap_caps_malloc(display_h_res * display_v_res * 3, MALLOC_CAP_SPIRAM);
+    if (!display_buf) {
+        ESP_LOGE(TAG, "Failed to allocate display buffer!");
+        return;
+    }
+    memset(display_buf, 0, display_h_res * display_v_res * 3);
 
     xTaskCreatePinnedToCore(
         emulator_task,
