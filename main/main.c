@@ -58,7 +58,7 @@ void rc_dokey(int key, int st)             { (void)key; (void)st; }
 static char const TAG[] = "howboymatsu";
 
 // ROM path on SD card
-#define ROM_PATH "/sdcard/roms/game.gb"
+#define ROM_PATH "/sdcard/roms/game.gbc"
 
 // GBC screen size
 #define GBC_WIDTH  160
