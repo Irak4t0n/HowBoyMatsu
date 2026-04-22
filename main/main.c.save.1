@@ -75,7 +75,7 @@ static char const TAG[] = "howboymatsu";
 #define GBC_HEIGHT 144
 
 // Display scale factor
-#define SCALE 5
+#define SCALE 3
 
 // Global variables
 static size_t                       display_h_res        = 0;
@@ -105,11 +105,8 @@ void blit(void) {
 }
 // Draw the GBC screen scaled up onto the Tanmatsu display
 void draw_gbc_screen(void) {
-    // With rotation, PAX logical width/height are swapped vs display_h_res/v_res
-    int logical_w = pax_buf_get_width(&fb_pax);
-    int logical_h = pax_buf_get_height(&fb_pax);
-    int offset_x = (logical_w - GBC_WIDTH  * SCALE) / 2;
-    int offset_y = (logical_h - GBC_HEIGHT * SCALE) / 2;
+    int offset_x = (display_h_res - GBC_WIDTH  * SCALE) / 2;
+    int offset_y = (display_v_res - GBC_HEIGHT * SCALE) / 2;
 
     for (int y = 0; y < GBC_HEIGHT; y++) {
         for (int x = 0; x < GBC_WIDTH; x++) {
@@ -138,18 +135,17 @@ void vid_init(void) {
     fb.ptr     = (uint8_t *)gbc_pixels;
     fb.w       = GBC_WIDTH;
     fb.h       = GBC_HEIGHT;
-    fb.pelsize = 2;
-    fb.pitch   = GBC_WIDTH * 2;
+    fb.pelsize = 2;               // 2 bytes per pixel = RGB565
+    fb.pitch   = GBC_WIDTH * 2;  // bytes per row
     fb.indexed = 0;
     fb.enabled = 1;
     fb.dirty   = 0;
-    fb.cc[0].l = 11; fb.cc[0].r = 0;
-    fb.cc[1].l = 6;  fb.cc[1].r = 0;
-    fb.cc[2].l = 0;  fb.cc[2].r = 0;
-    fb.cc[3].l = 0;  fb.cc[3].r = 0;
-    ESP_LOGI(TAG, "gnuboy video initialized");
-}
-void vid_close(void) {}
+
+    // RGB565 layout: RRRRRGGGGGGBBBBB
+    // gnuboy cc[n].l = left-shift for channel n (r=right-shift, must be 0)
+    fb.cc[0].l = 11; fb.cc[0].r = 0;  // Red:   5 bits at position 11
+    fb.cc[1].l = 6;  fb.cc[1].r = 0;  // Green: 6-bit field, GBC has 5-bit green
+    fb.cc[2].l = 0;  fb.cc[2].r = 0;  // Blue:  5 bits at position 0
 
 void vid_begin(void) {
     frame++;
@@ -161,6 +157,11 @@ void vid_end(void) {
     static int frame_count = 0;
     frame_count++;
     if (fb.dirty) {
+        uint32_t nonzero = 0;
+        for (int i = 0; i < GBC_WIDTH * GBC_HEIGHT; i++) {
+            if (gbc_pixels[i] != 0) nonzero++;
+        }
+        ESP_LOGI(TAG, "frame=%d gnuboy_frame=%d non-zero pixels: %lu", frame_count, frame, nonzero);
         draw_gbc_screen();
         fb.dirty = 0;
     }

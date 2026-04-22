@@ -38,16 +38,15 @@
 // gnuboy global variables required by the emulator core
 struct fb fb;
 struct pcm pcm;
-int frame = 0;
 
 // Display buffers gnuboy uses internally
-static uint16_t displayBuffer0[160 * 144];
-static uint16_t displayBuffer1[160 * 144];
-uint16_t* displayBuffer[2] = { displayBuffer0, displayBuffer1 };
+uint16_t* displayBuffer[2];
 uint8_t currentBuffer = 0;
 
 // Frame buffer that gnuboy's lcd.c writes scan lines into
+static uint16_t frame_buf[160 * 144];
 static uint8_t *display_buf = NULL;
+uint16_t* frame = frame_buf;
 
 // Export tables - stubs to satisfy the linker
 rcvar_t emu_exports[] = { RCV_END };
@@ -75,7 +74,7 @@ static char const TAG[] = "howboymatsu";
 #define GBC_HEIGHT 144
 
 // Display scale factor
-#define SCALE 5
+#define SCALE 3
 
 // Global variables
 static size_t                       display_h_res        = 0;
@@ -91,7 +90,6 @@ static uint16_t gbc_pixels[GBC_WIDTH * GBC_HEIGHT];
 // Forward declarations
 void vid_init(void);
 void vid_begin(void);
-void pal_dirty(void);
 void vid_end(void);
 void vid_setpal(int i, int r, int g, int b);
 void pcm_init(void);
@@ -105,11 +103,8 @@ void blit(void) {
 }
 // Draw the GBC screen scaled up onto the Tanmatsu display
 void draw_gbc_screen(void) {
-    // With rotation, PAX logical width/height are swapped vs display_h_res/v_res
-    int logical_w = pax_buf_get_width(&fb_pax);
-    int logical_h = pax_buf_get_height(&fb_pax);
-    int offset_x = (logical_w - GBC_WIDTH  * SCALE) / 2;
-    int offset_y = (logical_h - GBC_HEIGHT * SCALE) / 2;
+    int offset_x = (display_h_res - GBC_WIDTH  * SCALE) / 2;
+    int offset_y = (display_v_res - GBC_HEIGHT * SCALE) / 2;
 
     for (int y = 0; y < GBC_HEIGHT; y++) {
         for (int x = 0; x < GBC_WIDTH; x++) {
@@ -138,28 +133,33 @@ void vid_init(void) {
     fb.ptr     = (uint8_t *)gbc_pixels;
     fb.w       = GBC_WIDTH;
     fb.h       = GBC_HEIGHT;
-    fb.pelsize = 2;
-    fb.pitch   = GBC_WIDTH * 2;
+    fb.pelsize = 2;               // 2 bytes per pixel = RGB565
+    fb.pitch   = GBC_WIDTH * 2;  // bytes per row
     fb.indexed = 0;
     fb.enabled = 1;
     fb.dirty   = 0;
-    fb.cc[0].l = 11; fb.cc[0].r = 0;
-    fb.cc[1].l = 6;  fb.cc[1].r = 0;
-    fb.cc[2].l = 0;  fb.cc[2].r = 0;
-    fb.cc[3].l = 0;  fb.cc[3].r = 0;
+
+    // RGB565 layout: RRRRRGGGGGGBBBBB
+    // gnuboy cc[n].l = left-shift for channel n (r=right-shift, must be 0)
+    fb.cc[0].l = 11; fb.cc[0].r = 0;  // Red:   5 bits at position 11
+    fb.cc[1].l = 6;  fb.cc[1].r = 0;  // Green: 6-bit field, GBC has 5-bit green
+    fb.cc[2].l = 0;  fb.cc[2].r = 0;  // Blue:  5 bits at position 0
+    fb.cc[3].l = 0;  fb.cc[3].r = 0;  // Alpha: unused
+
     ESP_LOGI(TAG, "gnuboy video initialized");
 }
 void vid_close(void) {}
 
 void vid_begin(void) {
-    frame++;
     fb.dirty = 1;
-    pal_dirty();
 }
 
 void vid_end(void) {
     static int frame_count = 0;
     frame_count++;
+    if (frame_count % 60 == 0) {
+        ESP_LOGI(TAG, "vid_end called, frame=%d, dirty=%d", frame_count, fb.dirty);
+    }
     if (fb.dirty) {
         draw_gbc_screen();
         fb.dirty = 0;
@@ -191,6 +191,7 @@ void sys_initpath(char *exe)          { (void)exe; }
 
 // --- gnuboy input ---
 static int gbc_keys[8] = {0};
+
 void doevents(void) {
     bsp_input_event_t event;
     while (xQueueReceive(input_event_queue, &event, 0) == pdTRUE) {

@@ -148,6 +148,11 @@ void vid_init(void) {
     fb.cc[2].l = 0;  fb.cc[2].r = 0;
     fb.cc[3].l = 0;  fb.cc[3].r = 0;
     ESP_LOGI(TAG, "gnuboy video initialized");
+    ESP_LOGI(TAG, "display: %dx%d rotation=%d offset_x=%d offset_y=%d",
+        (int)display_h_res, (int)display_v_res,
+        (int)bsp_display_get_default_rotation(),
+        (int)((display_h_res - GBC_WIDTH * SCALE) / 2),
+        (int)((display_v_res - GBC_HEIGHT * SCALE) / 2));
 }
 void vid_close(void) {}
 
@@ -161,6 +166,7 @@ void vid_end(void) {
     static int frame_count = 0;
     frame_count++;
     if (fb.dirty) {
+        }
         draw_gbc_screen();
         fb.dirty = 0;
     }
