@@ -43,7 +43,7 @@ int frame = 0;
 // Display buffers gnuboy uses internally
 static uint16_t displayBuffer0[160 * 144];
 static uint16_t displayBuffer1[160 * 144];
-uint16_t* displayBuffer[2] = { displayBuffer0, displayBuffer1 };
+cfuint16_t* displayBuffer[2] = { displayBuffer0, displayBuffer1 };
 uint8_t currentBuffer = 0;
 
 // Frame buffer that gnuboy's lcd.c writes scan lines into
@@ -87,6 +87,8 @@ static QueueHandle_t                input_event_queue    = NULL;
 
 // gnuboy pixel buffer (RGB565, 160x144)
 static uint16_t gbc_pixels[GBC_WIDTH * GBC_HEIGHT];
+// Direct RGB888 display buffer for fast blitting (800x480x3 bytes)
+static uint8_t* direct_fb = NULL;
 
 // Forward declarations
 void vid_init(void);
@@ -105,6 +107,9 @@ void blit(void) {
 }
 // Draw the GBC screen scaled up onto the Tanmatsu display
 void draw_gbc_screen(void) {
+    uint32_t *pixels = (uint32_t *)pax_buf_get_pixels(&fb_pax);
+    if (!pixels) return;
+
     int logical_w = pax_buf_get_width(&fb_pax);
     int logical_h = pax_buf_get_height(&fb_pax);
     int offset_x  = (logical_w - GBC_WIDTH  * SCALE) / 2;
@@ -117,17 +122,17 @@ void draw_gbc_screen(void) {
             uint8_t g = ((pixel >> 5)  & 0x3F) << 2;
             uint8_t b = ( pixel        & 0x1F) << 3;
             uint32_t col = 0xFF000000 | (r << 16) | (g << 8) | b;
+            int base_x = offset_x + x * SCALE;
+            int base_y = offset_y + y * SCALE;
             for (int sy = 0; sy < SCALE; sy++) {
+                uint32_t *row = pixels + (base_y + sy) * logical_w + base_x;
                 for (int sx = 0; sx < SCALE; sx++) {
-                    pax_set_pixel(&fb_pax, col,
-                                  offset_x + x * SCALE + sx,
-                                  offset_y + y * SCALE + sy);
+                    row[sx] = col;
                 }
             }
         }
     }
-    bsp_display_blit(0, 0, display_h_res, display_v_res,
-                     pax_buf_get_pixels(&fb_pax));
+    bsp_display_blit(0, 0, display_h_res, display_v_res, pixels);
 }
 // --- gnuboy platform callbacks ---
 void vid_preinit(void) {}
@@ -300,7 +305,6 @@ ESP_LOGI(TAG, "Loading ROM from %s", ROM_PATH);
     FILE *rom_fd = fopen(ROM_PATH, "rb");
     if (rom_fd == NULL) {
         ESP_LOGE(TAG, "Failed to open ROM file: %s", ROM_PATH);
-        pax_background(&fb_pax, 0xFF000000);
         pax_draw_text(&fb_pax, 0xFFFF0000, pax_font_sky_mono, 16, 10, 10, "ROM file not found!");
         pax_draw_text(&fb_pax, 0xFFFFFF00, pax_font_sky_mono, 12, 10, 40, ROM_PATH);
         pax_draw_text(&fb_pax, 0xFFAAAAAA, pax_font_sky_mono, 12, 10, 70, "Press F1 to return");
@@ -358,7 +362,6 @@ ESP_LOGI(TAG, "Loading ROM from %s", ROM_PATH);
     loader_init(rom_data);
 
     ESP_LOGI(TAG, "ROM loaded! Starting emulator...");
-    pax_background(&fb_pax, 0xFF000000);
     blit();
 
     emu_reset();
@@ -370,13 +373,11 @@ ESP_LOGI(TAG, "Loading ROM from %s", ROM_PATH);
 // --- App entry point ---
 void app_main(void) {
     gpio_install_isr_service(0);
-
     esp_err_t res = nvs_flash_init();
     if (res == ESP_ERR_NVS_NO_FREE_PAGES || res == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
         nvs_flash_init();
     }
-
     const bsp_configuration_t bsp_configuration = {
         .display = {
             .requested_color_format = LCD_COLOR_PIXEL_FORMAT_RGB888,
@@ -388,14 +389,12 @@ void app_main(void) {
         ESP_LOGE(TAG, "BSP init failed: %d", res);
         return;
     }
-
     res = bsp_display_get_parameters(&display_h_res, &display_v_res,
                                       &display_color_format, &display_data_endian);
     if (res != ESP_OK) {
         ESP_LOGE(TAG, "Display parameters failed: %d", res);
         return;
     }
-
     pax_buf_type_t format = PAX_BUF_24_888RGB;
     if (display_color_format == LCD_COLOR_PIXEL_FORMAT_RGB565) {
         format = PAX_BUF_16_565RGB;
@@ -408,28 +407,36 @@ void app_main(void) {
         case BSP_DISPLAY_ROTATION_270: orientation = PAX_O_ROT_CW;   break;
         default:                       orientation = PAX_O_UPRIGHT;  break;
     }
-    pax_buf_init(&fb_pax, NULL, display_h_res, display_v_res, format);
+    size_t pax_buf_size = display_h_res * display_v_res * 4;
+    void *pax_pixels = heap_caps_malloc(pax_buf_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    if (!pax_pixels) {
+        pax_pixels = heap_caps_malloc(pax_buf_size, MALLOC_CAP_SPIRAM);
+        ESP_LOGW(TAG, "PAX buffer in PSRAM - DMA may not work");
+    }
+    pax_buf_init(&fb_pax, pax_pixels, display_h_res, display_v_res, format);
     pax_buf_reversed(&fb_pax, display_data_endian == LCD_RGB_DATA_ENDIAN_BIG);
     pax_buf_set_orientation(&fb_pax, orientation);
-
     ESP_ERROR_CHECK(bsp_input_get_queue(&input_event_queue));
-
-    pax_background(&fb_pax, 0xFF000000);
     pax_draw_text(&fb_pax, 0xFF00FF00, pax_font_sky_mono, 24, 10, 10,  "HowBoyMatsu");
     pax_draw_text(&fb_pax, 0xFFFFFFFF, pax_font_sky_mono, 14, 10, 50,  "Game Boy Color Emulator");
     pax_draw_text(&fb_pax, 0xFFAAAAAA, pax_font_sky_mono, 12, 10, 80,  "for Tanmatsu");
     pax_draw_text(&fb_pax, 0xFFFFFF00, pax_font_sky_mono, 12, 10, 120, "Loading ROM...");
     blit();
-
 vTaskDelay(pdMS_TO_TICKS(500));
-
-    // Allocate display buffer in PSRAM
+// Allocate display buffer in PSRAM
     display_buf = (uint8_t *)heap_caps_malloc(display_h_res * display_v_res * 3, MALLOC_CAP_SPIRAM);
     if (!display_buf) {
         ESP_LOGE(TAG, "Failed to allocate display buffer!");
         return;
     }
     memset(display_buf, 0, display_h_res * display_v_res * 3);
+
+    direct_fb = (uint8_t *)heap_caps_malloc(display_h_res * display_v_res * 3, MALLOC_CAP_SPIRAM);
+    if (!direct_fb) {
+        ESP_LOGE(TAG, "Failed to allocate direct_fb!");
+        return;
+    }
+    memset(direct_fb, 0, display_h_res * display_v_res * 3);
 
     xTaskCreatePinnedToCore(
         emulator_task,

@@ -87,6 +87,8 @@ static QueueHandle_t                input_event_queue    = NULL;
 
 // gnuboy pixel buffer (RGB565, 160x144)
 static uint16_t gbc_pixels[GBC_WIDTH * GBC_HEIGHT];
+// Direct RGB888 display buffer for fast blitting (800x480x3 bytes)
+static uint8_t* direct_fb = NULL;
 
 // Forward declarations
 void vid_init(void);
@@ -105,10 +107,15 @@ void blit(void) {
 }
 // Draw the GBC screen scaled up onto the Tanmatsu display
 void draw_gbc_screen(void) {
-    int logical_w = pax_buf_get_width(&fb_pax);
-    int logical_h = pax_buf_get_height(&fb_pax);
+    if (!direct_fb) return;
+
+    int logical_w = pax_buf_get_width(&fb_pax);   // 800
+    int logical_h = pax_buf_get_height(&fb_pax);  // 480
     int offset_x  = (logical_w - GBC_WIDTH  * SCALE) / 2;
     int offset_y  = (logical_h - GBC_HEIGHT * SCALE) / 2;
+
+    // Clear buffer to black
+    memset(direct_fb, 0, display_h_res * display_v_res * 3);
 
     for (int y = 0; y < GBC_HEIGHT; y++) {
         for (int x = 0; x < GBC_WIDTH; x++) {
@@ -116,18 +123,24 @@ void draw_gbc_screen(void) {
             uint8_t r = ((pixel >> 11) & 0x1F) << 3;
             uint8_t g = ((pixel >> 5)  & 0x3F) << 2;
             uint8_t b = ( pixel        & 0x1F) << 3;
-            uint32_t col = 0xFF000000 | (r << 16) | (g << 8) | b;
+
             for (int sy = 0; sy < SCALE; sy++) {
                 for (int sx = 0; sx < SCALE; sx++) {
-                    pax_set_pixel(&fb_pax, col,
-                                  offset_x + x * SCALE + sx,
-                                  offset_y + y * SCALE + sy);
+                    // With rotation=3 (270 CW), logical (lx,ly) maps to
+                    // physical (display_h_res-1-ly, lx) in the raw buffer
+                    int lx = offset_x + x * SCALE + sx;
+                    int ly = offset_y + y * SCALE + sy;
+                    int px = display_h_res - 1 - ly;
+                    int py = lx;
+                    int idx = (py * display_h_res + px) * 3;
+                    direct_fb[idx + 0] = r;
+                    direct_fb[idx + 1] = g;
+                    direct_fb[idx + 2] = b;
                 }
             }
         }
     }
-    bsp_display_blit(0, 0, display_h_res, display_v_res,
-                     pax_buf_get_pixels(&fb_pax));
+    bsp_display_blit(0, 0, display_h_res, display_v_res, direct_fb);
 }
 // --- gnuboy platform callbacks ---
 void vid_preinit(void) {}
