@@ -103,8 +103,27 @@ void blit(void) {
 }
 // Draw the GBC screen scaled up onto the Tanmatsu display
 void draw_gbc_screen(void) {
-    // Test: fill screen red using PAX
-    pax_background(&fb_pax, 0xFFFF0000);
+    int offset_x = (display_h_res - GBC_WIDTH  * SCALE) / 2;
+    int offset_y = (display_v_res - GBC_HEIGHT * SCALE) / 2;
+
+    uint32_t *pixels = (uint32_t *)pax_buf_get_pixels(&fb_pax);
+
+    for (int y = 0; y < GBC_HEIGHT; y++) {
+        for (int x = 0; x < GBC_WIDTH; x++) {
+            uint16_t pixel = gbc_pixels[y * GBC_WIDTH + x];
+            uint8_t r = ((pixel >> 11) & 0x1F) << 3;
+            uint8_t g = ((pixel >> 5)  & 0x3F) << 2;
+            uint8_t b = ( pixel        & 0x1F) << 3;
+            uint32_t col = 0xFF000000 | (r << 16) | (g << 8) | b;
+            for (int sy = 0; sy < SCALE; sy++) {
+                for (int sx = 0; sx < SCALE; sx++) {
+                    int px = offset_x + x * SCALE + sx;
+                    int py = offset_y + y * SCALE + sy;
+                    pixels[py * display_h_res + px] = col;
+                }
+            }
+        }
+    }
     bsp_display_blit(0, 0, display_h_res, display_v_res, pax_buf_get_pixels(&fb_pax));
 }
 
