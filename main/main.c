@@ -34,6 +34,7 @@
 #include "input.h"
 #include "pcm.h"
 #include "lcd.h"
+#include "esp_timer.h"
 
 // gnuboy global variables required by the emulator core
 struct fb fb;
@@ -117,11 +118,12 @@ void draw_gbc_screen(void) {
             uint8_t g = ((pixel >> 5)  & 0x3F) << 2;
             uint8_t b = ( pixel        & 0x1F) << 3;
             uint32_t col = 0xFF000000 | (r << 16) | (g << 8) | b;
+            int base_x = offset_x + x * SCALE;
+            int base_y = offset_y + y * SCALE;
             for (int sy = 0; sy < SCALE; sy++) {
                 for (int sx = 0; sx < SCALE; sx++) {
-                    pax_set_pixel(&fb_pax, col,
-                                  offset_x + x * SCALE + sx,
-                                  offset_y + y * SCALE + sy);
+                    pax_set_pixel_raw(&fb_pax, col,
+                                      base_x + sx, base_y + sy);
                 }
             }
         }
@@ -146,6 +148,7 @@ void vid_init(void) {
     fb.cc[2].l = 0;  fb.cc[2].r = 0;
     fb.cc[3].l = 0;  fb.cc[3].r = 0;
     ESP_LOGI(TAG, "gnuboy video initialized");
+    ESP_LOGI(TAG, "PAX buf ptr: %p  w=%d h=%d", pax_buf_get_pixels(&fb_pax), pax_buf_get_width(&fb_pax), pax_buf_get_height(&fb_pax));
 }
 void vid_close(void) {}
 
@@ -157,10 +160,18 @@ void vid_begin(void) {
 
 void vid_end(void) {
     static int frame_count = 0;
+    static int64_t last_time = 0;
     frame_count++;
+    if (last_time == 0) last_time = esp_timer_get_time();
     if (fb.dirty) {
         draw_gbc_screen();
         fb.dirty = 0;
+    }
+    if (frame_count % 10 == 0) {
+        int64_t now = esp_timer_get_time();
+        float fps = 10.0f / ((now - last_time) / 1000000.0f);
+        ESP_LOGI(TAG, "FPS: %.1f", fps);
+        last_time = now;
     }
 }
 void vid_setpal(int i, int r, int g, int b) {
