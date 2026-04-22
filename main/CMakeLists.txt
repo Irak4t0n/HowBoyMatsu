@@ -14,6 +14,7 @@ idf_component_register(
 		bt
 		badge-bsp
 		tanmatsu-wifi
+        gnuboy
 		${extra_requires}
 	INCLUDE_DIRS
 		"."
