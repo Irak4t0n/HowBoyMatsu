@@ -112,6 +112,7 @@ void doevents(void);
 
 static void blit(void);
 static char sram_path_global[320] = {0};
+static float gbc_volume = 100.0f;
 #define ROMS_DIR "/sdcard/roms"
 #define MAX_ROMS 64
 static char rom_list[MAX_ROMS][300];
@@ -299,7 +300,7 @@ void pcm_init(void) {
         bsp_audio_set_rate(22050);
         i2s_channel_enable(i2s);
     }
-    bsp_audio_set_volume(100.0);
+    bsp_audio_set_volume(gbc_volume);
     bsp_audio_set_amplifier(true);
 
     pcm.hz     = 22050;
@@ -365,6 +366,22 @@ void doevents(void) {
                 case BSP_INPUT_NAVIGATION_KEY_LEFT:  pad_set(PAD_LEFT,  pressed); break;
                 case BSP_INPUT_NAVIGATION_KEY_RIGHT: pad_set(PAD_RIGHT, pressed); break;
                 case BSP_INPUT_NAVIGATION_KEY_RETURN: pad_set(PAD_START,  pressed); break;
+                case BSP_INPUT_NAVIGATION_KEY_VOLUME_UP:
+                    if (pressed) {
+                        gbc_volume += 5.0f;
+                        if (gbc_volume > 100.0f) gbc_volume = 100.0f;
+                        bsp_audio_set_volume(gbc_volume);
+                        ESP_LOGI(TAG, "Volume: %.0f%%", gbc_volume);
+                    }
+                    break;
+                case BSP_INPUT_NAVIGATION_KEY_VOLUME_DOWN:
+                    if (pressed) {
+                        gbc_volume -= 5.0f;
+                        if (gbc_volume < 0.0f) gbc_volume = 0.0f;
+                        bsp_audio_set_volume(gbc_volume);
+                        ESP_LOGI(TAG, "Volume: %.0f%%", gbc_volume);
+                    }
+                    break;
                 case BSP_INPUT_NAVIGATION_KEY_F1:
                     if (pressed) {
                         if (sram_path_global[0]) {
