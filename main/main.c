@@ -49,6 +49,11 @@ uint8_t currentBuffer = 0;
 
 // Frame buffer that gnuboy's lcd.c writes scan lines into
 static uint8_t *display_buf = NULL;
+static uint8_t *render_buf_a = NULL;
+static uint8_t *render_buf_b = NULL;
+static volatile uint8_t active_render_buf = 0;
+static SemaphoreHandle_t sem_frame_ready = NULL;
+static SemaphoreHandle_t sem_frame_done = NULL;
 
 // Export tables - stubs to satisfy the linker
 rcvar_t emu_exports[] = { RCV_END };
@@ -105,44 +110,49 @@ void blit(void) {
     bsp_display_blit(0, 0, display_h_res, display_v_res, pax_buf_get_pixels(&fb_pax));
 }
 // Draw the GBC screen scaled up onto the Tanmatsu display
-static uint8_t scaled_row[480 * 3];
+static uint16_t scaled_row_565[480];
 
 void draw_gbc_screen(void) {
     const int GBC_W   = 160;
     const int GBC_H   = 144;
-    const int PHYS_W  = 480;  // PAX physical width (after CW rotation)
-    const int PHYS_H  = 800;  // PAX physical height
-    const int H_SCALE = 3;    // 144*3 = 432, centered in 480
-    const int V_SCALE = 5;    // 160*5 = 800
-    const int X_OFF   = (PHYS_W - GBC_H * H_SCALE) / 2;  // 24
+    const int PHYS_W  = 480;
+    const int H_SCALE = 3;
+    const int V_SCALE = 5;
+    const int X_OFF   = (PHYS_W - GBC_H * H_SCALE) / 2;
 
-    uint8_t *phys = (uint8_t *)pax_buf_get_pixels(&fb_pax);
+    xSemaphoreTake(sem_frame_done, portMAX_DELAY);
+    uint16_t *phys = (uint16_t *)((active_render_buf == 0) ? render_buf_b : render_buf_a);
 
     static int init_done = 0;
     if (!init_done) {
-        memset(phys, 0, PHYS_W * PHYS_H * 3);
-        memset(scaled_row, 0, X_OFF * 3);
-        memset(scaled_row + (X_OFF + GBC_H * H_SCALE) * 3, 0, X_OFF * 3);
+        memset(render_buf_a, 0, PHYS_W * 800 * 2);
+        memset(render_buf_b, 0, PHYS_W * 800 * 2);
+        memset(scaled_row_565, 0, X_OFF * 2);
+        memset(scaled_row_565 + X_OFF + GBC_H * H_SCALE, 0, X_OFF * 2);
         init_done = 1;
     }
 
     for (int gx = 0; gx < GBC_W; gx++) {
-        uint8_t *rp = scaled_row + X_OFF * 3;
+        uint16_t *rp = scaled_row_565 + X_OFF;
         for (int gy = GBC_H - 1; gy >= 0; gy--) {
             uint16_t pixel = gbc_pixels[gy * GBC_W + gx];
-            uint8_t r = ((pixel >> 11) & 0x1F) << 3;
-            uint8_t g = ((pixel >> 5)  & 0x3F) << 2;
-            uint8_t b = ( pixel        & 0x1F) << 3;
+            // Convert RGB565 gnuboy format to display RGB565
+            uint8_t r5 = (pixel >> 11) & 0x1F;
+            uint8_t g6 = (pixel >> 5)  & 0x3F;
+            uint8_t b5 =  pixel        & 0x1F;
+            uint16_t p565 = (r5 << 11) | (g6 << 5) | b5;
             for (int sx = 0; sx < H_SCALE; sx++) {
-                *rp++ = r; *rp++ = g; *rp++ = b;
+                *rp++ = p565;
             }
         }
         int row_start = gx * V_SCALE;
         for (int rep = 0; rep < V_SCALE; rep++) {
-            memcpy(phys + (row_start + rep) * PHYS_W * 3, scaled_row, PHYS_W * 3);
+            memcpy(phys + (row_start + rep) * PHYS_W, scaled_row_565, PHYS_W * 2);
         }
     }
-    bsp_display_blit(0, 0, PHYS_W, PHYS_H, phys);
+
+    active_render_buf ^= 1;
+    xSemaphoreGive(sem_frame_ready);
 }
 // --- gnuboy platform callbacks ---
 void vid_preinit(void) {}
@@ -263,6 +273,16 @@ void die(char *fmt, ...) {
 }
 
 // --- Main emulator task ---
+void blit_task(void *arg) {
+    const int PHYS_W = 480;
+    const int PHYS_H = 800;
+    for (;;) {
+        xSemaphoreTake(sem_frame_ready, portMAX_DELAY);
+        uint8_t *buf = (active_render_buf == 0) ? render_buf_a : render_buf_b;
+        bsp_display_blit(0, 0, PHYS_W, PHYS_H, buf);
+        xSemaphoreGive(sem_frame_done);
+    }
+}
 void emulator_task(void *arg) {
     ESP_LOGI(TAG, "Mounting SD card...");
 
@@ -403,7 +423,7 @@ void app_main(void) {
 
     const bsp_configuration_t bsp_configuration = {
         .display = {
-            .requested_color_format = LCD_COLOR_PIXEL_FORMAT_RGB888,
+            .requested_color_format = LCD_COLOR_PIXEL_FORMAT_RGB565,
             .num_fbs = 1,
         },
     };
@@ -447,21 +467,20 @@ void app_main(void) {
 
 vTaskDelay(pdMS_TO_TICKS(500));
 
-    // Allocate display buffer in PSRAM
+// Allocate display buffer in PSRAM
     display_buf = (uint8_t *)heap_caps_malloc(display_h_res * display_v_res * 3, MALLOC_CAP_SPIRAM);
+    render_buf_a = (uint8_t *)heap_caps_malloc(480 * 800 * 2, MALLOC_CAP_SPIRAM);
+    render_buf_b = (uint8_t *)heap_caps_malloc(480 * 800 * 2, MALLOC_CAP_SPIRAM);
+    memset(render_buf_a, 0, 480 * 800 * 2);
+    memset(render_buf_b, 0, 480 * 800 * 2);
+    sem_frame_ready = xSemaphoreCreateBinary();
+    sem_frame_done  = xSemaphoreCreateBinary();
+    xSemaphoreGive(sem_frame_done);
     if (!display_buf) {
         ESP_LOGE(TAG, "Failed to allocate display buffer!");
         return;
     }
     memset(display_buf, 0, display_h_res * display_v_res * 3);
-
-    xTaskCreatePinnedToCore(
-        emulator_task,
-        "emulator",
-        32768,
-        NULL,
-        5,
-        NULL,
-        1
-    );
+    xTaskCreatePinnedToCore(blit_task, "blit", 4096, NULL, 5, NULL, 0);
+    xTaskCreatePinnedToCore(emulator_task, "emulator", 32768, NULL, 5, NULL, 1);
 }
