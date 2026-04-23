@@ -3,6 +3,9 @@
 #include <stdarg.h>
 #include "bsp/device.h"
 #include "bsp/display.h"
+#include "bsp/audio.h"
+#include "driver/i2s_std.h"
+#include "bsp/audio.h"
 #include "bsp/input.h"
 #include "bsp/led.h"
 #include "bsp/power.h"
@@ -100,7 +103,6 @@ void vid_begin(void);
 void pal_dirty(void);
 void vid_end(void);
 void vid_setpal(int i, int r, int g, int b);
-void pcm_init(void);
 int  pcm_submit(void);
 void sys_sleep(int us);
 void doevents(void);
@@ -206,9 +208,43 @@ void vid_settitle(char *title) {
 }
 
 // --- gnuboy audio callbacks (stub for now) ---
-void pcm_init(void)    {}
-int  pcm_submit(void)  { return 1; }
-void pcm_close(void)   {}
+void pcm_init(void) {
+    i2s_chan_handle_t i2s = NULL;
+    bsp_audio_get_i2s_handle(&i2s);
+    if (i2s) {
+        i2s_channel_disable(i2s);
+        bsp_audio_set_rate(22050);
+        i2s_channel_enable(i2s);
+    }
+    bsp_audio_set_volume(75.0);
+    bsp_audio_set_amplifier(true);
+
+    pcm.hz     = 22050;
+    pcm.stereo = 1;
+    pcm.len    = (22050 / 60) * 2;  // samples (stereo pairs)
+    pcm.buf    = (byte *)malloc(pcm.len * sizeof(int16_t));
+    pcm.pos    = 0;
+    memset(pcm.buf, 0, pcm.len * sizeof(int16_t));
+    ESP_LOGI(TAG, "Audio initialized at %dHz stereo len=%d", pcm.hz, pcm.len);
+}
+
+int pcm_submit(void) {
+    if (!pcm.buf || pcm.pos == 0) {
+        pcm.pos = 0;
+        return 1;
+    }
+    i2s_chan_handle_t i2s = NULL;
+    bsp_audio_get_i2s_handle(&i2s);
+    if (!i2s) { pcm.pos = 0; return 1; }
+    size_t written = 0;
+    i2s_channel_write(i2s, pcm.buf, pcm.pos * sizeof(int16_t), &written, pdMS_TO_TICKS(100));
+    pcm.pos = 0;
+    return 1;
+}
+
+void pcm_close(void) {
+    if (pcm.buf) free(pcm.buf);
+}
 
 // --- gnuboy system callbacks ---
 void sys_sleep(int us) {
