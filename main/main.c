@@ -35,6 +35,7 @@
 #include "fb.h"
 #include "rc.h"
 #include "input.h"
+#include "hw.h"
 #include "pcm.h"
 #include "lcd.h"
 #include "esp_timer.h"
@@ -261,34 +262,44 @@ void sys_initpath(char *exe)          { (void)exe; }
 static int gbc_keys[8] = {0};
 void doevents(void) {
     bsp_input_event_t event;
+    static uint32_t key_release_time[4] = {0, 0, 0, 0};
+    static byte key_pads[4] = {PAD_A, PAD_B, PAD_START, PAD_SELECT};
+
+    // Auto-release keys after 100ms
+    uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    for (int i = 0; i < 4; i++) {
+        if (key_release_time[i] > 0 && now >= key_release_time[i]) {
+            pad_set(key_pads[i], 0);
+            key_release_time[i] = 0;
+        }
+    }
+
     while (xQueueReceive(input_event_queue, &event, 0) == pdTRUE) {
-        int pressed = 0;
-        int key = -1;
         if (event.type == INPUT_EVENT_TYPE_NAVIGATION) {
-            pressed = event.args_navigation.state;
+            int pressed = event.args_navigation.state;
             switch (event.args_navigation.key) {
-                case BSP_INPUT_NAVIGATION_KEY_UP:    key = 0; break;
-                case BSP_INPUT_NAVIGATION_KEY_DOWN:  key = 1; break;
-                case BSP_INPUT_NAVIGATION_KEY_LEFT:  key = 2; break;
-                case BSP_INPUT_NAVIGATION_KEY_RIGHT: key = 3; break;
+                case BSP_INPUT_NAVIGATION_KEY_UP:    pad_set(PAD_UP,    pressed); break;
+                case BSP_INPUT_NAVIGATION_KEY_DOWN:  pad_set(PAD_DOWN,  pressed); break;
+                case BSP_INPUT_NAVIGATION_KEY_LEFT:  pad_set(PAD_LEFT,  pressed); break;
+                case BSP_INPUT_NAVIGATION_KEY_RIGHT: pad_set(PAD_RIGHT, pressed); break;
                 case BSP_INPUT_NAVIGATION_KEY_F1:
                     if (pressed) bsp_device_restart_to_launcher();
                     break;
                 default: break;
             }
         } else if (event.type == INPUT_EVENT_TYPE_KEYBOARD) {
-            pressed = 1;
+            uint32_t release_at = now + 100;
             switch (event.args_keyboard.ascii) {
-                case 'x': case 'X': key = 4; break;
-                case 'z': case 'Z': key = 5; break;
-                case '\n':          key = 6; break;
-                case ' ':           key = 7; break;
+                case 'a': case 'A':
+                    pad_set(PAD_A, 1); key_release_time[0] = release_at; break;
+                case 'd': case 'D':
+                    pad_set(PAD_B, 1); key_release_time[1] = release_at; break;
+                case '\n': case '\r':
+                    pad_set(PAD_START, 1); key_release_time[2] = release_at; break;
+                case ' ':
+                    pad_set(PAD_SELECT, 1); key_release_time[3] = release_at; break;
                 default: break;
             }
-        }
-        if (key >= 0) {
-            gbc_keys[key] = pressed;
-            rc_dokey(key, pressed);
         }
     }
 }
