@@ -25,6 +25,7 @@
 #include "hw.h"
 #include "lcd.h"
 #include "rtc.h"
+#include "esp_task_wdt.h"
 #include "rc.h"
 #include "sound.h"
 
@@ -310,6 +311,7 @@ int sram_load(FILE* f)
 	ram.loaded = 1;
 
     if (f == NULL) return 0;
+    esp_task_wdt_reset();
     fread(ram.sbank, mbc.ramsize * 8192, 1, f);
     printf("SRAM size: %d\n", mbc.ramsize * 8192);
 	return 0;

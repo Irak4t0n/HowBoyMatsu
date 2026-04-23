@@ -32,6 +32,11 @@
 // gnuboy headers
 #include "gnuboy.h"
 #include "loader.h"
+void rtc_save(FILE* f);
+void rtc_load(FILE* f);
+#include "lcd.h"
+#include "sound.h"
+#include "mem.h"
 #include "fb.h"
 #include "rc.h"
 #include "input.h"
@@ -58,6 +63,8 @@ static uint8_t *render_buf_b = NULL;
 static volatile uint8_t active_render_buf = 0;
 static SemaphoreHandle_t sem_frame_ready = NULL;
 static SemaphoreHandle_t sem_frame_done = NULL;
+static TaskHandle_t blit_task_handle = NULL;
+static volatile bool sram_load_done = false;
 
 // Export tables - stubs to satisfy the linker
 rcvar_t emu_exports[] = { RCV_END };
@@ -113,6 +120,8 @@ void doevents(void);
 static void blit(void);
 static char sram_path_global[320] = {0};
 static float gbc_volume = 100.0f;
+static bool show_fps = false;
+static float current_fps = 0.0f;
 #define ROMS_DIR "/sdcard/roms"
 #define MAX_ROMS 64
 static char rom_list[MAX_ROMS][300];
@@ -275,11 +284,24 @@ void vid_end(void) {
     if (frame_count % 18000 == 0 && frame_count > 0 && sram_path_global[0]) {
         FILE *sf = fopen(sram_path_global, "wb");
         if (sf) { sram_save(sf); fclose(sf); ESP_LOGI("howboymatsu", "SRAM autosaved"); }
+        char rtc_path3[320];
+        strncpy(rtc_path3, sram_path_global, sizeof(rtc_path3)-1);
+        char *rdot3 = strrchr(rtc_path3, '.');
+        if (rdot3) strcpy(rdot3, ".rtc");
+        FILE *rf3 = fopen(rtc_path3, "wb");
+        if (rf3) { rtc_save(rf3); fclose(rf3); }
     }
     if (frame_count % 10 == 0) {
         int64_t now = esp_timer_get_time();
         float fps = 10.0f / ((now - last_time) / 1000000.0f);
+        current_fps = fps;
         ESP_LOGI(TAG, "FPS: %.1f", fps);
+        // Refresh palette for first 5 seconds after SRAM load to fix green hue
+        if (frame_count < 300 && sram_path_global[0]) {
+            pal_dirty();
+            vram_dirty();
+        }
+
         last_time = now;
     }
 }
@@ -366,6 +388,21 @@ void doevents(void) {
                 case BSP_INPUT_NAVIGATION_KEY_LEFT:  pad_set(PAD_LEFT,  pressed); break;
                 case BSP_INPUT_NAVIGATION_KEY_RIGHT: pad_set(PAD_RIGHT, pressed); break;
                 case BSP_INPUT_NAVIGATION_KEY_RETURN: pad_set(PAD_START,  pressed); break;
+                case BSP_INPUT_NAVIGATION_KEY_ESC:
+                    if (pressed) {
+                        show_fps = !show_fps;
+                        if (!show_fps) {
+                            // Clear FPS region in both render buffers
+                            uint16_t *pa = (uint16_t *)render_buf_a;
+                            uint16_t *pb = (uint16_t *)render_buf_b;
+                            for (int r = 2; r < 13; r++)
+                                for (int c = 2; c < 58; c++) {
+                                    pa[r * 480 + c] = 0x0000;
+                                    pb[r * 480 + c] = 0x0000;
+                                }
+                        }
+                    }
+                    break;
                 case BSP_INPUT_NAVIGATION_KEY_VOLUME_UP:
                     if (pressed) {
                         gbc_volume += 5.0f;
@@ -387,6 +424,12 @@ void doevents(void) {
                         if (sram_path_global[0]) {
                             FILE *sf = fopen(sram_path_global, "wb");
                             if (sf) { sram_save(sf); fclose(sf); ESP_LOGI("howboymatsu", "SRAM saved on exit"); }
+                            char rtc_path2[320];
+                            strncpy(rtc_path2, sram_path_global, sizeof(rtc_path2)-1);
+                            char *rdot2 = strrchr(rtc_path2, '.');
+                            if (rdot2) strcpy(rdot2, ".rtc");
+                            FILE *rf = fopen(rtc_path2, "wb");
+                            if (rf) { rtc_save(rf); fclose(rf); }
                         }
                         bsp_device_restart_to_launcher();
                     }
@@ -417,11 +460,11 @@ void ev_poll(void) {
 // gnuboy die() handler
 void die(char *fmt, ...) {
     va_list ap;
-    char buf[256];
+    char diebuf[256];
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
+    vsnprintf(diebuf, sizeof(diebuf), fmt, ap);
     va_end(ap);
-    ESP_LOGE(TAG, "%s", buf);
+    ESP_LOGE(TAG, "%s", diebuf);
     abort();
 }
 
@@ -432,6 +475,68 @@ void blit_task(void *arg) {
     for (;;) {
         xSemaphoreTake(sem_frame_ready, portMAX_DELAY);
         uint8_t *buf = (active_render_buf == 0) ? render_buf_a : render_buf_b;
+        // Draw FPS overlay directly into render buffer
+        if (show_fps && current_fps > 1.0f) {
+            static const uint8_t font5x7[][5] = {
+                {0x1F,0x11,0x11,0x11,0x1F},{0x00,0x12,0x1F,0x10,0x00},
+                {0x1D,0x15,0x15,0x15,0x17},{0x11,0x15,0x15,0x15,0x1F},
+                {0x07,0x04,0x04,0x04,0x1F},{0x17,0x15,0x15,0x15,0x1D},
+                {0x1F,0x15,0x15,0x15,0x1D},{0x01,0x01,0x01,0x01,0x1F},
+                {0x1F,0x15,0x15,0x15,0x1F},{0x17,0x15,0x15,0x15,0x1F},
+                {0x00,0x18,0x18,0x00,0x00},{0x00,0x00,0x00,0x00,0x00},
+                {0x1F,0x05,0x05,0x05,0x01},{0x1F,0x15,0x15,0x09,0x00},
+                {0x11,0x15,0x15,0x15,0x1B}
+            };
+            char fps_str[16];
+            snprintf(fps_str, sizeof(fps_str), "%.1f FPS", current_fps);
+            uint16_t *phys = (uint16_t *)buf;
+            uint16_t green = 0x07E0;
+            // Scale factor for text size
+            const int SC = 3;
+            // Text origin in physical buffer: top-left corner of game screen
+            // Game screen is at col X_OFF=24, rows 0-800
+            // We want text at top-left of the game area
+            // In rotated buffer: game cols map to physical cols 24..455
+            // Text at physical row=4, col=28 (just inside game area)
+            const int TY = 4;   // physical row (0-799)
+            const int TX = 28;  // physical col (0-479)
+            int text_w = 8 * SC * 6; // 8 chars * SC * 6px wide
+            int text_h = 7 * SC + 4;
+            // Clear background
+            for (int r = TY; r < TY + text_h; r++)
+                for (int c = TX - 2; c < TX + text_w + 2; c++)
+                    if (r < 800 && c < 480)
+                        phys[r * PHYS_W + c] = 0x0000;
+            // Draw text with scale SC
+            int sx = TX;
+            for (int ci = 0; fps_str[ci]; ci++) {
+                char ch = fps_str[ci];
+                int idx = -1;
+                if (ch>='0'&&ch<='9') idx=ch-'0';
+                else if (ch=='.') idx=10;
+                else if (ch==' ') idx=11;
+                else if (ch=='F') idx=12;
+                else if (ch=='P') idx=13;
+                else if (ch=='S') idx=14;
+                if (idx >= 0) {
+                    for (int col=0; col<5; col++) {
+                        uint8_t bits = font5x7[idx][col];
+                        for (int row=0; row<7; row++) {
+                            if (bits & (1<<row)) {
+                                for (int sy2=0; sy2<SC; sy2++)
+                                for (int sx2=0; sx2<SC; sx2++) {
+                                    int px = TY + row*SC + sy2;
+                                    int py = sx + col*SC + sx2;
+                                    if (px<800 && py<480)
+                                        phys[px * PHYS_W + py] = green;
+                                }
+                            }
+                        }
+                    }
+                }
+                sx += 6 * SC;
+            }
+        }
         bsp_display_blit(0, 0, PHYS_W, PHYS_H, buf);
         xSemaphoreGive(sem_frame_done);
     }
@@ -587,17 +692,34 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     if (sram_f) {
         int r = sram_load(sram_f);
         fclose(sram_f);
+        // Load RTC data
+        char rtc_path[320];
+        strncpy(rtc_path, sram_path_global, sizeof(rtc_path)-1);
+        char *rdot = strrchr(rtc_path, '.');
+        if (rdot) strcpy(rdot, ".rtc");
+        FILE *rtc_f = fopen(rtc_path, "rb");
+        if (rtc_f) { rtc_load(rtc_f); }  // rtc_load closes the file internally
+        else rtc_load(NULL);
         ESP_LOGI(TAG, "SRAM loaded from %s (ret=%d)", sram_path_global, r);
     } else {
         int r = sram_load(NULL);
         ESP_LOGI(TAG, "No SRAM save found, starting fresh (ret=%d)", r);
     }
 
+    sram_load_done = true;
+    sram_load_done = true;
     ESP_LOGI(TAG, "ROM loaded! Starting emulator...");
     pax_background(&fb_pax, 0xFF000000);
     blit();
 
     emu_reset();
+    // Refresh state after SRAM load
+    if (sram_path_global[0]) {
+        vram_dirty();
+        pal_dirty();
+        sound_dirty();
+        mem_updatemap();
+    }
     emu_run();
 
     vTaskDelete(NULL);
@@ -663,8 +785,10 @@ vTaskDelay(pdMS_TO_TICKS(500));
     display_buf = (uint8_t *)heap_caps_malloc(display_h_res * display_v_res * 3, MALLOC_CAP_SPIRAM);
     render_buf_a = (uint8_t *)heap_caps_malloc(480 * 800 * 2, MALLOC_CAP_SPIRAM);
     render_buf_b = (uint8_t *)heap_caps_malloc(480 * 800 * 2, MALLOC_CAP_SPIRAM);
-    memset(render_buf_a, 0, 480 * 800 * 2);
-    memset(render_buf_b, 0, 480 * 800 * 2);
+    if (render_buf_a) memset(render_buf_a, 0, 480 * 800 * 2);
+    if (render_buf_b) memset(render_buf_b, 0, 480 * 800 * 2);
+    ESP_LOGI(TAG, "display_buf=%p render_a=%p render_b=%p", display_buf, render_buf_a, render_buf_b);
+    if (!render_buf_a || !render_buf_b) { ESP_LOGE(TAG, "Failed to allocate render buffers!"); return; }
     sem_frame_ready = xSemaphoreCreateBinary();
     sem_frame_done  = xSemaphoreCreateBinary();
     xSemaphoreGive(sem_frame_done);
@@ -673,6 +797,6 @@ vTaskDelay(pdMS_TO_TICKS(500));
         return;
     }
     memset(display_buf, 0, display_h_res * display_v_res * 3);
-    xTaskCreatePinnedToCore(blit_task, "blit", 4096, NULL, 5, NULL, 0);
+    xTaskCreatePinnedToCore(blit_task, "blit", 8192, NULL, 5, &blit_task_handle, 0);
     xTaskCreatePinnedToCore(emulator_task, "emulator", 32768, NULL, 5, NULL, 1);
 }
