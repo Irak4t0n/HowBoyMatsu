@@ -4,7 +4,7 @@ As of 04.23.26 we have:
 1. Working GameBoy Color Emulator on the Tanmatsu Console complete with
    a. 60 fps rendering
    b. Accurate color depiction
-   c. Sound (Kind of)
+   c. Accurate Audio
 
 Please do not hesitate to reach out with any adcvice/questions.
 
