@@ -282,6 +282,7 @@ void doevents(void) {
                 case BSP_INPUT_NAVIGATION_KEY_DOWN:  pad_set(PAD_DOWN,  pressed); break;
                 case BSP_INPUT_NAVIGATION_KEY_LEFT:  pad_set(PAD_LEFT,  pressed); break;
                 case BSP_INPUT_NAVIGATION_KEY_RIGHT: pad_set(PAD_RIGHT, pressed); break;
+                case BSP_INPUT_NAVIGATION_KEY_RETURN: pad_set(PAD_START,  pressed); break;
                 case BSP_INPUT_NAVIGATION_KEY_F1:
                     if (pressed) bsp_device_restart_to_launcher();
                     break;
