@@ -8,14 +8,15 @@ Correct screen orientation and scaling
 Fixed triple-image display bug
 Working stereo audio via ES8156/I2S
 Clean audio with proper clipping prevention
+ROM selector with D-pad navigation
+Button Mapping
 
 Still to do:
 
-ROM selector (file browser on startup)
-Button mapping (A/B/Start/Select/D-pad)
 Save states
 Volume button support
 On-screen FPS display (If needed)
+Overall polish
 
 Please do not hesitate to reach out with any adcvice/questions.
 
