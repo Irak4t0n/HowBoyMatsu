@@ -216,7 +216,7 @@ void pcm_init(void) {
         bsp_audio_set_rate(22050);
         i2s_channel_enable(i2s);
     }
-    bsp_audio_set_volume(75.0);
+    bsp_audio_set_volume(100.0);
     bsp_audio_set_amplifier(true);
 
     pcm.hz     = 22050;
