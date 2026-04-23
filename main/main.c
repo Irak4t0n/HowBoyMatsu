@@ -78,7 +78,7 @@ void rc_dokey(int key, int st)             { (void)key; (void)st; }
 static char const TAG[] = "howboymatsu";
 
 // ROM path on SD card
-#define ROM_PATH "/sdcard/roms/game.gbc"
+
 
 // GBC screen size
 #define GBC_WIDTH  160
@@ -109,6 +109,82 @@ void sys_sleep(int us);
 void doevents(void);
 
 // Blit PAX framebuffer to display
+
+static void blit(void);
+#define ROMS_DIR "/sdcard/roms"
+#define MAX_ROMS 64
+static char rom_list[MAX_ROMS][300];
+static int  rom_count = 0;
+
+static void scan_roms(void) {
+    rom_count = 0;
+    DIR *dir = opendir(ROMS_DIR);
+    if (!dir) { ESP_LOGE("howboymatsu", "Cannot open roms dir"); return; }
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL && rom_count < MAX_ROMS) {
+        char *name = entry->d_name;
+        int len = strlen(name);
+        if (len > 4) {
+            char *ext = name + len - 4;
+            if (strcasecmp(ext, ".gbc") == 0 || strcasecmp(ext, ".gb") == 0) {
+                snprintf(rom_list[rom_count], sizeof(rom_list[0]), "%s/%s", ROMS_DIR, name);
+                rom_count++;
+            }
+        }
+    }
+    closedir(dir);
+    ESP_LOGI("howboymatsu", "Found %d ROMs", rom_count);
+}
+
+static const char *rom_selector(void) {
+    if (rom_count == 0) return NULL;
+    int selected = 0, scroll = 0;
+    const int visible = 10;
+    while (1) {
+        pax_background(&fb_pax, 0xFF000000);
+        pax_draw_text(&fb_pax, 0xFF00FF00, pax_font_sky_mono, 20, 10, 10, "HowBoyMatsu");
+        pax_draw_text(&fb_pax, 0xFFAAAAAA, pax_font_sky_mono, 12, 10, 38, "[Up/Down]=Navigate  [Enter]=Launch  [F1]=Exit");
+        for (int i = 0; i < visible && (scroll + i) < rom_count; i++) {
+            int idx = scroll + i;
+            const char *fname = strrchr(rom_list[idx], '/');
+            fname = fname ? fname + 1 : rom_list[idx];
+            uint32_t color = (idx == selected) ? 0xFFFFFF00 : 0xFFFFFFFF;
+            if (idx == selected)
+                pax_simple_rect(&fb_pax, 0xFF333333, 5, 58 + i * 22, 470, 20);
+            char display[100];
+            snprintf(display, sizeof(display), "%s%.95s", idx == selected ? "> " : "  ", fname);
+            pax_draw_text(&fb_pax, color, pax_font_sky_mono, 14, 8, 60 + i * 22, display);
+        }
+        if (rom_count > visible) {
+            char hint[32];
+            snprintf(hint, sizeof(hint), "%d/%d", selected + 1, rom_count);
+            pax_draw_text(&fb_pax, 0xFF888888, pax_font_sky_mono, 12, 380, 38, hint);
+        }
+        blit();
+        bsp_input_event_t ev;
+        if (xQueueReceive(input_event_queue, &ev, portMAX_DELAY) == pdTRUE) {
+            if (ev.type == INPUT_EVENT_TYPE_NAVIGATION && ev.args_navigation.state == 1) {
+                switch (ev.args_navigation.key) {
+                    case BSP_INPUT_NAVIGATION_KEY_UP:
+                        if (selected > 0) { selected--; if (selected < scroll) scroll = selected; }
+                        break;
+                    case BSP_INPUT_NAVIGATION_KEY_DOWN:
+                        if (selected < rom_count - 1) { selected++; if (selected >= scroll + visible) scroll = selected - visible + 1; }
+                        break;
+                    case BSP_INPUT_NAVIGATION_KEY_RETURN:
+                        return rom_list[selected];
+                    case BSP_INPUT_NAVIGATION_KEY_F1:
+                        bsp_device_restart_to_launcher();
+                        break;
+                    default: break;
+                }
+            } else if (ev.type == INPUT_EVENT_TYPE_KEYBOARD && ev.args_keyboard.ascii == 'a') {
+                return rom_list[selected];
+            }
+        }
+    }
+}
+
 void blit(void) {
     bsp_display_blit(0, 0, display_h_res, display_v_res, pax_buf_get_pixels(&fb_pax));
 }
@@ -386,15 +462,34 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     vid_init();
     pcm_init();
 
-ESP_LOGI(TAG, "Loading ROM from %s", ROM_PATH);
+    scan_roms();
+    const char *rom_path = NULL;
+    if (rom_count == 1) {
+        rom_path = rom_list[0];
+    } else if (rom_count > 1) {
+        rom_path = rom_selector();
+    }
+    if (!rom_path) {
+        pax_background(&fb_pax, 0xFF000000);
+        pax_draw_text(&fb_pax, 0xFFFF0000, pax_font_sky_mono, 16, 10, 10, "No ROMs found!");
+        pax_draw_text(&fb_pax, 0xFFAAAAAA, pax_font_sky_mono, 12, 10, 40, "Place .gbc/.gb in /sdcard/roms/");
+        blit();
+        while (1) {
+            bsp_input_event_t ev2;
+            if (xQueueReceive(input_event_queue, &ev2, portMAX_DELAY) == pdTRUE)
+                if (ev2.type == INPUT_EVENT_TYPE_NAVIGATION && ev2.args_navigation.key == BSP_INPUT_NAVIGATION_KEY_F1 && ev2.args_navigation.state == 1)
+                    bsp_device_restart_to_launcher();
+        }
+    }
+    ESP_LOGI(TAG, "Loading ROM from %s", rom_path);
 
     // Read ROM file into memory
-    FILE *rom_fd = fopen(ROM_PATH, "rb");
+    FILE *rom_fd = fopen(rom_path, "rb");
     if (rom_fd == NULL) {
-        ESP_LOGE(TAG, "Failed to open ROM file: %s", ROM_PATH);
+        ESP_LOGE(TAG, "Failed to open ROM file: %s", rom_path);
         pax_background(&fb_pax, 0xFF000000);
         pax_draw_text(&fb_pax, 0xFFFF0000, pax_font_sky_mono, 16, 10, 10, "ROM file not found!");
-        pax_draw_text(&fb_pax, 0xFFFFFF00, pax_font_sky_mono, 12, 10, 40, ROM_PATH);
+        pax_draw_text(&fb_pax, 0xFFFFFF00, pax_font_sky_mono, 12, 10, 40, rom_path);
         pax_draw_text(&fb_pax, 0xFFAAAAAA, pax_font_sky_mono, 12, 10, 70, "Press F1 to return");
         blit();
         bsp_input_event_t ev;
