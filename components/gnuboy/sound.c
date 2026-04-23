@@ -274,21 +274,17 @@ void IRAM_ATTR sound_mix()
 		// if (r > 127) r = 127;
 		// else if (r < -128) r = -128;
 
-		if (pcm.buf)
-		{
-			if (pcm.pos >= pcm.len)
-			{
-				//pcm_submit();
-				printf("sound_mix: buffer overflow. (pcm.len=%d)\n", pcm.len);
-				//abort();
-			}
-			else if (pcm.stereo)
-			{
-				pcm.buf[pcm.pos++] = (int16_t)l; //+128;
-				pcm.buf[pcm.pos++] = (int16_t)r; //+128;
-			}
-			else pcm.buf[pcm.pos++] = (int16_t)((l+r)>>1); //+128;
-		}
+                if (pcm.buf)
+                {
+                        if (pcm.pos >= pcm.len)
+                                pcm_submit();
+                        if (pcm.stereo)
+                        {
+                                pcm.buf[pcm.pos++] = (int16_t)l;
+                                pcm.buf[pcm.pos++] = (int16_t)r;
+                        }
+                        else pcm.buf[pcm.pos++] = (int16_t)((l+r)>>1);
+                }
 	}
 	R_NR52 = (R_NR52&0xf0) | S1.on | (S2.on<<1) | (S3.on<<2) | (S4.on<<3);
 }

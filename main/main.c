@@ -222,7 +222,7 @@ void pcm_init(void) {
     pcm.hz     = 22050;
     pcm.stereo = 1;
     pcm.len    = (22050 / 60) * 2;  // samples (stereo pairs)
-    pcm.buf    = (byte *)malloc(pcm.len * sizeof(int16_t));
+    pcm.buf    = (int16_t *)malloc(pcm.len * sizeof(int16_t));
     pcm.pos    = 0;
     memset(pcm.buf, 0, pcm.len * sizeof(int16_t));
     ESP_LOGI(TAG, "Audio initialized at %dHz stereo len=%d", pcm.hz, pcm.len);
