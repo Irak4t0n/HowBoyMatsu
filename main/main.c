@@ -105,37 +105,44 @@ void blit(void) {
     bsp_display_blit(0, 0, display_h_res, display_v_res, pax_buf_get_pixels(&fb_pax));
 }
 // Draw the GBC screen scaled up onto the Tanmatsu display
-static uint8_t scaled_row[800 * 3];
+static uint8_t scaled_row[480 * 3];
 
 void draw_gbc_screen(void) {
-    const int H_SCALE = 5;
-    const int DSP_W   = 800;
-    const int DSP_H   = 480;
     const int GBC_W   = 160;
     const int GBC_H   = 144;
+    const int PHYS_W  = 480;  // PAX physical width (after CW rotation)
+    const int PHYS_H  = 800;  // PAX physical height
+    const int H_SCALE = 3;    // 144*3 = 432, centered in 480
+    const int V_SCALE = 5;    // 160*5 = 800
+    const int X_OFF   = (PHYS_W - GBC_H * H_SCALE) / 2;  // 24
 
-    uint8_t *dst = display_buf;
+    uint8_t *phys = (uint8_t *)pax_buf_get_pixels(&fb_pax);
 
-    for (int y = 0; y < GBC_H; y++) {
-        uint8_t *row_ptr = scaled_row;
-        for (int x = 0; x < GBC_W; x++) {
-            uint16_t pixel = gbc_pixels[y * GBC_W + x];
+    static int init_done = 0;
+    if (!init_done) {
+        memset(phys, 0, PHYS_W * PHYS_H * 3);
+        memset(scaled_row, 0, X_OFF * 3);
+        memset(scaled_row + (X_OFF + GBC_H * H_SCALE) * 3, 0, X_OFF * 3);
+        init_done = 1;
+    }
+
+    for (int gx = 0; gx < GBC_W; gx++) {
+        uint8_t *rp = scaled_row + X_OFF * 3;
+        for (int gy = GBC_H - 1; gy >= 0; gy--) {
+            uint16_t pixel = gbc_pixels[gy * GBC_W + gx];
             uint8_t r = ((pixel >> 11) & 0x1F) << 3;
             uint8_t g = ((pixel >> 5)  & 0x3F) << 2;
             uint8_t b = ( pixel        & 0x1F) << 3;
             for (int sx = 0; sx < H_SCALE; sx++) {
-                *row_ptr++ = r;
-                *row_ptr++ = g;
-                *row_ptr++ = b;
+                *rp++ = r; *rp++ = g; *rp++ = b;
             }
         }
-        int v_lines = ((y + 1) * DSP_H / GBC_H) - (y * DSP_H / GBC_H);
-        for (int rep = 0; rep < v_lines; rep++) {
-            memcpy(dst, scaled_row, DSP_W * 3);
-            dst += DSP_W * 3;
+        int row_start = gx * V_SCALE;
+        for (int rep = 0; rep < V_SCALE; rep++) {
+            memcpy(phys + (row_start + rep) * PHYS_W * 3, scaled_row, PHYS_W * 3);
         }
     }
-    bsp_display_blit(0, 0, DSP_W, DSP_H, display_buf);
+    bsp_display_blit(0, 0, PHYS_W, PHYS_H, phys);
 }
 // --- gnuboy platform callbacks ---
 void vid_preinit(void) {}
@@ -397,7 +404,7 @@ void app_main(void) {
     const bsp_configuration_t bsp_configuration = {
         .display = {
             .requested_color_format = LCD_COLOR_PIXEL_FORMAT_RGB888,
-            .num_fbs                = 1,
+            .num_fbs = 1,
         },
     };
     res = bsp_device_initialize(&bsp_configuration);
@@ -417,14 +424,14 @@ void app_main(void) {
     if (display_color_format == LCD_COLOR_PIXEL_FORMAT_RGB565) {
         format = PAX_BUF_16_565RGB;
     }
-    bsp_display_rotation_t display_rotation = bsp_display_get_default_rotation();
+    bsp_display_rotation_t display_rotation = BSP_DISPLAY_ROTATION_90;
     pax_orientation_t orientation = PAX_O_UPRIGHT;
     switch (display_rotation) {
-        case BSP_DISPLAY_ROTATION_90:  orientation = PAX_O_ROT_CCW;  break;
-        case BSP_DISPLAY_ROTATION_180: orientation = PAX_O_ROT_HALF; break;
-        case BSP_DISPLAY_ROTATION_270: orientation = PAX_O_ROT_CW;   break;
-        default:                       orientation = PAX_O_UPRIGHT;  break;
-    }
+    case BSP_DISPLAY_ROTATION_90: orientation = PAX_O_ROT_CW; break;
+    case BSP_DISPLAY_ROTATION_180: orientation = PAX_O_ROT_HALF; break;
+    case BSP_DISPLAY_ROTATION_270: orientation = PAX_O_ROT_CCW; break;
+    default: orientation = PAX_O_UPRIGHT; break;
+}
     pax_buf_init(&fb_pax, NULL, display_h_res, display_v_res, format);
     pax_buf_reversed(&fb_pax, display_data_endian == LCD_RGB_DATA_ENDIAN_BIG);
     pax_buf_set_orientation(&fb_pax, orientation);
