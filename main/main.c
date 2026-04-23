@@ -111,6 +111,7 @@ void doevents(void);
 // Blit PAX framebuffer to display
 
 static void blit(void);
+static char sram_path_global[320] = {0};
 #define ROMS_DIR "/sdcard/roms"
 #define MAX_ROMS 64
 static char rom_list[MAX_ROMS][300];
@@ -269,6 +270,11 @@ void vid_end(void) {
         draw_gbc_screen();
         fb.dirty = 0;
     }
+    // Autosave SRAM every hour (~216000 frames at 60fps)
+    if (frame_count % 18000 == 0 && frame_count > 0 && sram_path_global[0]) {
+        FILE *sf = fopen(sram_path_global, "wb");
+        if (sf) { sram_save(sf); fclose(sf); ESP_LOGI("howboymatsu", "SRAM autosaved"); }
+    }
     if (frame_count % 10 == 0) {
         int64_t now = esp_timer_get_time();
         float fps = 10.0f / ((now - last_time) / 1000000.0f);
@@ -360,7 +366,13 @@ void doevents(void) {
                 case BSP_INPUT_NAVIGATION_KEY_RIGHT: pad_set(PAD_RIGHT, pressed); break;
                 case BSP_INPUT_NAVIGATION_KEY_RETURN: pad_set(PAD_START,  pressed); break;
                 case BSP_INPUT_NAVIGATION_KEY_F1:
-                    if (pressed) bsp_device_restart_to_launcher();
+                    if (pressed) {
+                        if (sram_path_global[0]) {
+                            FILE *sf = fopen(sram_path_global, "wb");
+                            if (sf) { sram_save(sf); fclose(sf); ESP_LOGI("howboymatsu", "SRAM saved on exit"); }
+                        }
+                        bsp_device_restart_to_launcher();
+                    }
                     break;
                 default: break;
             }
@@ -543,6 +555,26 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
 
     // Pass ROM data to gnuboy
     loader_init(rom_data);
+
+    // Derive SRAM save path from ROM path
+    mkdir("/sdcard/saves", 0777);
+    const char *rom_base = strrchr(rom_path, '/');
+    rom_base = rom_base ? rom_base + 1 : rom_path;
+    snprintf(sram_path_global, sizeof(sram_path_global), "/sdcard/saves/%s", rom_base);
+    char *dot = strrchr(sram_path_global, '.');
+    if (dot) strcpy(dot, ".sav");
+
+    // Load SRAM on startup
+    ESP_LOGI(TAG, "SRAM path: %s", sram_path_global);
+    FILE *sram_f = fopen(sram_path_global, "rb");
+    if (sram_f) {
+        int r = sram_load(sram_f);
+        fclose(sram_f);
+        ESP_LOGI(TAG, "SRAM loaded from %s (ret=%d)", sram_path_global, r);
+    } else {
+        int r = sram_load(NULL);
+        ESP_LOGI(TAG, "No SRAM save found, starting fresh (ret=%d)", r);
+    }
 
     ESP_LOGI(TAG, "ROM loaded! Starting emulator...");
     pax_background(&fb_pax, 0xFF000000);
