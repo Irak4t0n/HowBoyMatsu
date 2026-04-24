@@ -32,7 +32,7 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 
 ## ROM Setup
 
-Place `.gb` and `.gbc` ROM files in `/sdcard/roms/` on your SD card. Save files are stored automatically in `/sdcard/saves/`.
+Place `.gb` and `.gbc` ROM files in `/sdcard/roms/` on your SD card. Save files are stored automatically in `/sdcard/saves/`. Both original Game Boy (DMG) and Game Boy Color ROMs are supported.
 
 ## Known Limitations
 
