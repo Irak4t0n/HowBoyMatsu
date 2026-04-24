@@ -488,7 +488,7 @@ void blit_task(void *arg) {
                 {0x11,0x15,0x15,0x15,0x1B}
             };
             char fps_str[16];
-            snprintf(fps_str, sizeof(fps_str), "%.1f FPS", current_fps);
+            snprintf(fps_str, sizeof(fps_str), "%.1f", current_fps);
             uint16_t *phys = (uint16_t *)buf;
             uint16_t green = 0x07E0;
             // Scale factor for text size
@@ -502,14 +502,18 @@ void blit_task(void *arg) {
             const int TX = 28;  // physical col (0-479)
             int text_w = 8 * SC * 6; // 8 chars * SC * 6px wide
             int text_h = 7 * SC + 4;
-            // Clear background
-            for (int r = TY; r < TY + text_h; r++)
-                for (int c = TX - 2; c < TX + text_w + 2; c++)
-                    if (r < 800 && c < 480)
-                        phys[r * PHYS_W + c] = 0x0000;
-            // Draw text with scale SC
-            int sx = TX;
-            for (int ci = 0; fps_str[ci]; ci++) {
+            // Top-right in landscape = high phys row, low phys col
+            // Text goes right = phys row increases per char
+            // Font col = row advance, font row = col advance (downward = col increases)
+            // Render FPS text: top-right, horizontal, correct orientation
+            // Physical buffer: row=0 is landscape-left, row=799 is landscape-right
+            // Physical buffer: col=0 is landscape-bottom, col=479 is landscape-top
+            // Top-right = high row, low col. Text left-to-right = row decreases per char.
+            // Font: col index = along text direction (row axis), row index = vertical (col axis)
+            int fps_len = 0;
+            while (fps_str[fps_len]) fps_len++;
+            int start_row = 790;  // rightmost char starts here
+            for (int ci = 0; ci < fps_len; ci++) {
                 char ch = fps_str[ci];
                 int idx = -1;
                 if (ch>='0'&&ch<='9') idx=ch-'0';
@@ -518,6 +522,8 @@ void blit_task(void *arg) {
                 else if (ch=='F') idx=12;
                 else if (ch=='P') idx=13;
                 else if (ch=='S') idx=14;
+                // char position: rightmost char = start_row, leftmost = start_row - (fps_len-1)*6*SC
+                int char_row = start_row - (fps_len - 1 - ci) * 6 * SC;
                 if (idx >= 0) {
                     for (int col=0; col<5; col++) {
                         uint8_t bits = font5x7[idx][col];
@@ -525,16 +531,15 @@ void blit_task(void *arg) {
                             if (bits & (1<<row)) {
                                 for (int sy2=0; sy2<SC; sy2++)
                                 for (int sx2=0; sx2<SC; sx2++) {
-                                    int px = TY + row*SC + sy2;
-                                    int py = sx + col*SC + sx2;
-                                    if (px<800 && py<480)
+                                    int px = char_row - (4-col)*SC - sy2;
+                                    int py = 4 + (6-row)*SC + sx2;
+                                    if (px>=0 && px<800 && py>=0 && py<480)
                                         phys[px * PHYS_W + py] = green;
                                 }
                             }
                         }
                     }
                 }
-                sx += 6 * SC;
             }
         }
         bsp_display_blit(0, 0, PHYS_W, PHYS_H, buf);
