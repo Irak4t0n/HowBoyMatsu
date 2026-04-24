@@ -112,6 +112,7 @@ void pal_dirty(void);
 void vid_end(void);
 void vid_setpal(int i, int r, int g, int b);
 int  pcm_submit(void);
+void audio_task(void *arg);
 void sys_sleep(int us);
 void doevents(void);
 
@@ -121,6 +122,12 @@ static void blit(void);
 static char sram_path_global[320] = {0};
 static float gbc_volume = 100.0f;
 static bool show_fps = false;
+static int16_t *audio_buf_a = NULL;
+static int16_t *audio_buf_b = NULL;
+static volatile int audio_buf_ready = 0;
+static volatile int audio_buf_len = 0;
+static SemaphoreHandle_t sem_audio_ready = NULL;
+static SemaphoreHandle_t sem_audio_done = NULL;
 static float current_fps = 0.0f;
 #define ROMS_DIR "/sdcard/roms"
 #define MAX_ROMS 64
@@ -223,18 +230,15 @@ void draw_gbc_screen(void) {
     }
 
     for (int gx = 0; gx < GBC_W; gx++) {
-        uint16_t *rp = scaled_row_565 + X_OFF;
+        uint16_t *rp = scaled_row_565;
         for (int gy = GBC_H - 1; gy >= 0; gy--) {
             uint16_t pixel = gbc_pixels[gy * GBC_W + gx];
             uint8_t r5 = (pixel >> 11) & 0x1F;
             uint8_t g6 = (pixel >> 5)  & 0x3F;
             uint8_t b5 =  pixel        & 0x1F;
             uint16_t p565 = (r5 << 11) | (g6 << 5) | b5;
-            // Every 3rd GBC pixel gets an extra copy to stretch 144->480
-            *rp++ = p565;
-            *rp++ = p565;
-            *rp++ = p565;
-            if (gy % 3 != 0) { *rp++ = p565; }
+            *rp++ = p565; *rp++ = p565; *rp++ = p565;
+            if (gy % 3 == 0) { *rp++ = p565; }
         }
         int row_start = gx * V_SCALE;
         for (int rep = 0; rep < V_SCALE; rep++) {
@@ -324,22 +328,29 @@ void pcm_init(void) {
     pcm.stereo = 1;
     pcm.len    = (44100 / 60) * 2;  // 1 frame of stereo samples at 44100Hz
     pcm.buf    = (int16_t *)malloc(pcm.len * sizeof(int16_t));
+    audio_buf_a = (int16_t *)malloc(pcm.len * sizeof(int16_t));
+    audio_buf_b = (int16_t *)malloc(pcm.len * sizeof(int16_t));
+    sem_audio_ready = xSemaphoreCreateBinary();
+    sem_audio_done  = xSemaphoreCreateBinary();
+    xSemaphoreGive(sem_audio_done);
+    xTaskCreatePinnedToCore(audio_task, "audio", 4096, NULL, 6, NULL, 0);
     pcm.pos    = 0;
     memset(pcm.buf, 0, pcm.len * sizeof(int16_t));
     ESP_LOGI(TAG, "Audio initialized at %dHz stereo len=%d", pcm.hz, pcm.len);
 }
 
 int pcm_submit(void) {
-    if (!pcm.buf || pcm.pos == 0) {
-        pcm.pos = 0;
-        return 1;
-    }
-    i2s_chan_handle_t i2s = NULL;
-    bsp_audio_get_i2s_handle(&i2s);
-    if (!i2s) { pcm.pos = 0; return 1; }
-    size_t written = 0;
-    i2s_channel_write(i2s, pcm.buf, pcm.pos * sizeof(int16_t), &written, pdMS_TO_TICKS(50));
+    if (!pcm.buf || pcm.pos == 0) { pcm.pos = 0; return 1; }
+    if (!sem_audio_ready || !sem_audio_done) { pcm.pos = 0; return 1; }
+    // Wait for audio task to finish previous buffer
+    xSemaphoreTake(sem_audio_done, pdMS_TO_TICKS(30));
+    // Copy to ready buffer and signal
+    int16_t *ready = (audio_buf_ready == 0) ? audio_buf_a : audio_buf_b;
+    memcpy(ready, pcm.buf, pcm.pos * sizeof(int16_t));
+    audio_buf_len = pcm.pos;
+    audio_buf_ready ^= 1;
     pcm.pos = 0;
+    xSemaphoreGive(sem_audio_ready);
     return 1;
 }
 
@@ -726,6 +737,17 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
 }
 
 // --- App entry point ---
+void audio_task(void *arg) {
+    i2s_chan_handle_t i2s = NULL;
+    bsp_audio_get_i2s_handle(&i2s);
+    while (1) {
+        xSemaphoreTake(sem_audio_ready, portMAX_DELAY);
+        int16_t *buf = (audio_buf_ready == 0) ? audio_buf_b : audio_buf_a;
+        size_t written = 0;
+        if (i2s) i2s_channel_write(i2s, buf, audio_buf_len * sizeof(int16_t), &written, pdMS_TO_TICKS(100));
+        xSemaphoreGive(sem_audio_done);
+    }
+}
 void app_main(void) {
     gpio_install_isr_service(0);
 
