@@ -315,19 +315,13 @@ void vid_settitle(char *title) {
 
 // --- gnuboy audio callbacks (stub for now) ---
 void pcm_init(void) {
-    i2s_chan_handle_t i2s = NULL;
-    bsp_audio_get_i2s_handle(&i2s);
-    if (i2s) {
-        i2s_channel_disable(i2s);
-        bsp_audio_set_rate(22050);
-        i2s_channel_enable(i2s);
-    }
+    // Keep I2S at 44100Hz to match ES8156 DAC configuration
     bsp_audio_set_volume(gbc_volume);
     bsp_audio_set_amplifier(true);
 
-    pcm.hz     = 22050;
+    pcm.hz     = 44100;
     pcm.stereo = 1;
-    pcm.len    = (22050 / 60) * 2;  // samples (stereo pairs)
+    pcm.len    = (44100 / 60) * 2 * 4;  // 4 frames of stereo samples at 44100Hz
     pcm.buf    = (int16_t *)malloc(pcm.len * sizeof(int16_t));
     pcm.pos    = 0;
     memset(pcm.buf, 0, pcm.len * sizeof(int16_t));
@@ -343,7 +337,7 @@ int pcm_submit(void) {
     bsp_audio_get_i2s_handle(&i2s);
     if (!i2s) { pcm.pos = 0; return 1; }
     size_t written = 0;
-    i2s_channel_write(i2s, pcm.buf, pcm.pos * sizeof(int16_t), &written, pdMS_TO_TICKS(100));
+    i2s_channel_write(i2s, pcm.buf, pcm.pos * sizeof(int16_t), &written, pdMS_TO_TICKS(20));
     pcm.pos = 0;
     return 1;
 }
