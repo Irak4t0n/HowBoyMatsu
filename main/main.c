@@ -208,7 +208,7 @@ void draw_gbc_screen(void) {
     const int PHYS_W  = 480;
     const int H_SCALE = 3;
     const int V_SCALE = 5;
-    const int X_OFF   = (PHYS_W - GBC_H * H_SCALE) / 2;
+    const int X_OFF   = 0;  // no padding, fill full width
 
     xSemaphoreTake(sem_frame_done, portMAX_DELAY);
     uint16_t *phys = (uint16_t *)((active_render_buf == 0) ? render_buf_b : render_buf_a);
@@ -226,14 +226,15 @@ void draw_gbc_screen(void) {
         uint16_t *rp = scaled_row_565 + X_OFF;
         for (int gy = GBC_H - 1; gy >= 0; gy--) {
             uint16_t pixel = gbc_pixels[gy * GBC_W + gx];
-            // Convert RGB565 gnuboy format to display RGB565
             uint8_t r5 = (pixel >> 11) & 0x1F;
             uint8_t g6 = (pixel >> 5)  & 0x3F;
             uint8_t b5 =  pixel        & 0x1F;
             uint16_t p565 = (r5 << 11) | (g6 << 5) | b5;
-            for (int sx = 0; sx < H_SCALE; sx++) {
-                *rp++ = p565;
-            }
+            // Every 3rd GBC pixel gets an extra copy to stretch 144->480
+            *rp++ = p565;
+            *rp++ = p565;
+            *rp++ = p565;
+            if (gy % 3 != 0) { *rp++ = p565; }
         }
         int row_start = gx * V_SCALE;
         for (int rep = 0; rep < V_SCALE; rep++) {
@@ -321,7 +322,7 @@ void pcm_init(void) {
 
     pcm.hz     = 44100;
     pcm.stereo = 1;
-    pcm.len    = (44100 / 60) * 2 * 4;  // 4 frames of stereo samples at 44100Hz
+    pcm.len    = (44100 / 60) * 2;  // 1 frame of stereo samples at 44100Hz
     pcm.buf    = (int16_t *)malloc(pcm.len * sizeof(int16_t));
     pcm.pos    = 0;
     memset(pcm.buf, 0, pcm.len * sizeof(int16_t));
@@ -337,7 +338,7 @@ int pcm_submit(void) {
     bsp_audio_get_i2s_handle(&i2s);
     if (!i2s) { pcm.pos = 0; return 1; }
     size_t written = 0;
-    i2s_channel_write(i2s, pcm.buf, pcm.pos * sizeof(int16_t), &written, pdMS_TO_TICKS(20));
+    i2s_channel_write(i2s, pcm.buf, pcm.pos * sizeof(int16_t), &written, pdMS_TO_TICKS(50));
     pcm.pos = 0;
     return 1;
 }
