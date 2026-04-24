@@ -192,6 +192,17 @@ static const char *rom_selector(void) {
                     case BSP_INPUT_NAVIGATION_KEY_RETURN:
                         return rom_list[selected];
                     case BSP_INPUT_NAVIGATION_KEY_F1:
+                        // Clean exit: stop blit task, black screen, stop audio
+                        if (blit_task_handle) vTaskSuspend(blit_task_handle);
+                        vTaskDelay(pdMS_TO_TICKS(20));
+                        if (render_buf_a) {
+                            memset(render_buf_a, 0, 480 * 800 * 2);
+                            bsp_display_blit(0, 0, 480, 800, render_buf_a);
+                            vTaskDelay(pdMS_TO_TICKS(50));
+                            bsp_display_blit(0, 0, 480, 800, render_buf_a);
+                        }
+                        bsp_audio_set_volume(0);
+                        vTaskDelay(pdMS_TO_TICKS(150));
                         bsp_device_restart_to_launcher();
                         break;
                     default: break;
@@ -437,6 +448,17 @@ void doevents(void) {
                             FILE *rf = fopen(rtc_path2, "wb");
                             if (rf) { rtc_save(rf); }  // rtc_save closes file internally
                         }
+                        // Clean exit: stop blit task, black screen, stop audio
+                        if (blit_task_handle) vTaskSuspend(blit_task_handle);
+                        vTaskDelay(pdMS_TO_TICKS(20));
+                        if (render_buf_a) {
+                            memset(render_buf_a, 0, 480 * 800 * 2);
+                            bsp_display_blit(0, 0, 480, 800, render_buf_a);
+                            vTaskDelay(pdMS_TO_TICKS(50));
+                            bsp_display_blit(0, 0, 480, 800, render_buf_a);
+                        }
+                        bsp_audio_set_volume(0);
+                        vTaskDelay(pdMS_TO_TICKS(150));
                         bsp_device_restart_to_launcher();
                     }
                     break;
