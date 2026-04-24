@@ -289,7 +289,7 @@ void vid_end(void) {
         char *rdot3 = strrchr(rtc_path3, '.');
         if (rdot3) strcpy(rdot3, ".rtc");
         FILE *rf3 = fopen(rtc_path3, "wb");
-        if (rf3) { rtc_save(rf3); fclose(rf3); }
+        if (rf3) { rtc_save(rf3); }  // rtc_save closes file internally
     }
     if (frame_count % 10 == 0) {
         int64_t now = esp_timer_get_time();
@@ -429,7 +429,7 @@ void doevents(void) {
                             char *rdot2 = strrchr(rtc_path2, '.');
                             if (rdot2) strcpy(rdot2, ".rtc");
                             FILE *rf = fopen(rtc_path2, "wb");
-                            if (rf) { rtc_save(rf); fclose(rf); }
+                            if (rf) { rtc_save(rf); }  // rtc_save closes file internally
                         }
                         bsp_device_restart_to_launcher();
                     }
