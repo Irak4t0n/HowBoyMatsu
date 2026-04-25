@@ -115,11 +115,38 @@ int  pcm_submit(void);
 void audio_task(void *arg);
 void sys_sleep(int us);
 void doevents(void);
+void savestate(FILE *f);
+void loadstate(FILE *f);
+void vram_dirty(void);
+void sound_dirty(void);
+void mem_updatemap(void);
 
 // Blit PAX framebuffer to display
 
 static void blit(void);
 static char sram_path_global[320] = {0};
+static char state_save_dir[320]   = {0};
+
+// Save state menu
+#define SS_MENU_CLOSED  0
+#define SS_MENU_OPEN    1
+#define SS_MENU_SAVING  2
+#define SS_MENU_LOADING 3
+#define SS_SAVE   0
+#define SS_LOAD   1
+#define SS_CANCEL 2
+
+static volatile int  ss_state      = SS_MENU_CLOSED;
+static volatile int  ss_slot       = 0;
+static volatile int  ss_cursor     = SS_SAVE;
+static bool          ss_exists[10] = {false};
+static char          ss_toast[32]  = {0};
+static int           ss_toast_f    = 0;
+static volatile int  ss_dirty      = 0;
+static volatile int  ss_io_op      = 0;
+static SemaphoreHandle_t sem_ss    = NULL;
+static volatile int  ss_drawn_static = 0;
+static volatile int  ss_clear_region  = 0; // counts down 2 frames to clear both bufs
 static float gbc_volume = 100.0f;
 static bool show_fps = false;
 static int16_t *audio_buf_a = NULL;
@@ -253,10 +280,12 @@ void draw_gbc_screen(void) {
         }
         int row_start = gx * V_SCALE;
         for (int rep = 0; rep < V_SCALE; rep++) {
-            memcpy(phys + (row_start + rep) * PHYS_W, scaled_row_565, PHYS_W * 2);
+            int row = row_start + rep;
+            memcpy(phys + row * PHYS_W, scaled_row_565, PHYS_W * 2);
         }
     }
 
+    if (ss_clear_region > 0) ss_clear_region--;
     active_render_buf ^= 1;
     xSemaphoreGive(sem_frame_ready);
 }
@@ -399,6 +428,44 @@ void doevents(void) {
     while (xQueueReceive(input_event_queue, &event, 0) == pdTRUE) {
         if (event.type == INPUT_EVENT_TYPE_NAVIGATION) {
             int pressed = event.args_navigation.state;
+
+            // Save state menu input routing
+            if (ss_state == SS_MENU_OPEN && pressed) {
+                switch (event.args_navigation.key) {
+                    case BSP_INPUT_NAVIGATION_KEY_UP:
+                        ss_cursor--; if (ss_cursor < SS_SAVE) ss_cursor = SS_CANCEL;
+                        if (ss_cursor == SS_LOAD && !ss_exists[ss_slot]) ss_cursor = SS_SAVE;
+                        break;
+                    case BSP_INPUT_NAVIGATION_KEY_DOWN:
+                        ss_cursor++; if (ss_cursor > SS_CANCEL) ss_cursor = SS_SAVE;
+                        if (ss_cursor == SS_LOAD && !ss_exists[ss_slot]) ss_cursor = SS_CANCEL;
+                        break;
+                    case BSP_INPUT_NAVIGATION_KEY_LEFT:
+                        ss_slot--; if (ss_slot < 0) ss_slot = 9;
+                        if (ss_cursor == SS_LOAD && !ss_exists[ss_slot]) ss_cursor = SS_SAVE;
+                        break;
+                    case BSP_INPUT_NAVIGATION_KEY_RIGHT:
+                        ss_slot++; if (ss_slot > 9) ss_slot = 0;
+                        if (ss_cursor == SS_LOAD && !ss_exists[ss_slot]) ss_cursor = SS_SAVE;
+                        break;
+                    case BSP_INPUT_NAVIGATION_KEY_RETURN:
+                        if (ss_cursor == SS_CANCEL) {
+                            ss_state = SS_MENU_CLOSED;
+                        } else if (ss_cursor == SS_SAVE && ss_io_op == 0) {
+                            ss_io_op = 1; ss_state = SS_MENU_SAVING;
+                            xSemaphoreGive(sem_ss);
+                        } else if (ss_cursor == SS_LOAD && ss_exists[ss_slot] && ss_io_op == 0) {
+                            ss_io_op = 2; ss_state = SS_MENU_LOADING;
+                            xSemaphoreGive(sem_ss);
+                        }
+                        break;
+                    case BSP_INPUT_NAVIGATION_KEY_F4:
+                        ss_state = SS_MENU_CLOSED; break;
+                    default: break;
+                }
+                continue; // swallow all input while menu open
+            }
+
             switch (event.args_navigation.key) {
                 case BSP_INPUT_NAVIGATION_KEY_UP:    pad_set(PAD_UP,    pressed); break;
                 case BSP_INPUT_NAVIGATION_KEY_DOWN:  pad_set(PAD_DOWN,  pressed); break;
@@ -434,6 +501,20 @@ void doevents(void) {
                         if (gbc_volume < 0.0f) gbc_volume = 0.0f;
                         bsp_audio_set_volume(gbc_volume);
                         ESP_LOGI(TAG, "Volume: %.0f%%", gbc_volume);
+                    }
+                    break;
+                case BSP_INPUT_NAVIGATION_KEY_F4:
+                    if (pressed && ss_state == SS_MENU_CLOSED && state_save_dir[0]) {
+                        for (int si = 0; si < 10; si++) {
+                            char spath[340];
+                            snprintf(spath, sizeof(spath), "%s.ss%d", state_save_dir, si);
+                            struct stat st;
+                            ss_exists[si] = (stat(spath, &st) == 0);
+                        }
+                        ss_cursor = SS_SAVE;
+                        ss_drawn_static = 0;
+                        ss_clear_region  = 0;
+                        ss_state = SS_MENU_OPEN;
                     }
                     break;
                 case BSP_INPUT_NAVIGATION_KEY_F1:
@@ -494,6 +575,154 @@ void die(char *fmt, ...) {
     va_end(ap);
     ESP_LOGE(TAG, "%s", diebuf);
     abort();
+}
+
+
+// ── Save state 5x7 font (ASCII 32-122) ──────────────────────────────────────
+static const uint8_t SS_FONT[128][5] = {
+    [' ']={0,0,0,0,0},    ['!']={0,0,0x5F,0,0},
+    ['0']={0x3E,0x51,0x49,0x45,0x3E},['1']={0,0x42,0x7F,0x40,0},
+    ['2']={0x42,0x61,0x51,0x49,0x46},['3']={0x21,0x41,0x45,0x4B,0x31},
+    ['4']={0x18,0x14,0x12,0x7F,0x10},['5']={0x27,0x45,0x45,0x45,0x39},
+    ['6']={0x3C,0x4A,0x49,0x49,0x30},['7']={0x01,0x71,0x09,0x05,0x03},
+    ['8']={0x36,0x49,0x49,0x49,0x36},['9']={0x06,0x49,0x49,0x29,0x1E},
+    ['A']={0x7E,0x11,0x11,0x11,0x7E},['B']={0x7F,0x49,0x49,0x49,0x36},
+    ['C']={0x3E,0x41,0x41,0x41,0x22},['D']={0x7F,0x41,0x41,0x22,0x1C},
+    ['E']={0x7F,0x49,0x49,0x49,0x41},['F']={0x7F,0x09,0x09,0x09,0x01},
+    ['G']={0x3E,0x41,0x49,0x49,0x7A},['H']={0x7F,0x08,0x08,0x08,0x7F},
+    ['I']={0,0x41,0x7F,0x41,0},    ['J']={0x20,0x40,0x41,0x3F,0x01},
+    ['K']={0x7F,0x08,0x14,0x22,0x41},['L']={0x7F,0x40,0x40,0x40,0x40},
+    ['M']={0x7F,0x02,0x0C,0x02,0x7F},['N']={0x7F,0x04,0x08,0x10,0x7F},
+    ['O']={0x3E,0x41,0x41,0x41,0x3E},['P']={0x7F,0x09,0x09,0x09,0x06},
+    ['Q']={0x3E,0x41,0x51,0x21,0x5E},['R']={0x7F,0x09,0x19,0x29,0x46},
+    ['S']={0x46,0x49,0x49,0x49,0x31},['T']={0x01,0x01,0x7F,0x01,0x01},
+    ['U']={0x3F,0x40,0x40,0x40,0x3F},['V']={0x1F,0x20,0x40,0x20,0x1F},
+    ['W']={0x3F,0x40,0x38,0x40,0x3F},['X']={0x63,0x14,0x08,0x14,0x63},
+    ['Y']={0x07,0x08,0x70,0x08,0x07},['Z']={0x61,0x51,0x49,0x45,0x43},
+    ['a']={0x20,0x54,0x54,0x54,0x78},['b']={0x7F,0x48,0x44,0x44,0x38},
+    ['c']={0x38,0x44,0x44,0x44,0x20},['d']={0x38,0x44,0x44,0x48,0x7F},
+    ['e']={0x38,0x54,0x54,0x54,0x18},['f']={0x08,0x7E,0x09,0x01,0x02},
+    ['g']={0x0C,0x52,0x52,0x52,0x3E},['h']={0x7F,0x08,0x04,0x04,0x78},
+    ['i']={0,0x44,0x7D,0x40,0},    ['j']={0x20,0x40,0x44,0x3D,0},
+    ['k']={0x7F,0x10,0x28,0x44,0}, ['l']={0,0x41,0x7F,0x40,0},
+    ['m']={0x7C,0x04,0x18,0x04,0x78},['n']={0x7C,0x08,0x04,0x04,0x78},
+    ['o']={0x38,0x44,0x44,0x44,0x38},['p']={0x7C,0x14,0x14,0x14,0x08},
+    ['q']={0x08,0x14,0x14,0x18,0x7C},['r']={0x7C,0x08,0x04,0x04,0x08},
+    ['s']={0x48,0x54,0x54,0x54,0x20},['t']={0x04,0x3F,0x44,0x40,0x20},
+    ['u']={0x3C,0x40,0x40,0x20,0x7C},['v']={0x1C,0x20,0x40,0x20,0x1C},
+    ['w']={0x3C,0x40,0x30,0x40,0x3C},['x']={0x44,0x28,0x10,0x28,0x44},
+    ['y']={0x0C,0x50,0x50,0x50,0x3C},['z']={0x44,0x64,0x54,0x4C,0x44},
+    ['-']={0x08,0x08,0x08,0x08,0x08},['<']={0x08,0x14,0x22,0x41,0},
+    ['>']={0,0x41,0x22,0x14,0x08},  ['.']={0,0x60,0x60,0,0},
+    ['(']={0x1C,0x22,0x41,0,0},     [')']={0,0,0x41,0x22,0x1C},
+};
+
+// Physical buffer: row 0-799 = landscape X, col 0-479 = landscape Y (high=top)
+// Text: row increases per char (left→right), col decreases per font row (top→down)
+
+// Fill a rectangle using memset per row — fast, no inner pixel loop
+static inline void ss_rect(uint16_t *p, int r0, int c_top, int rw, int ch, uint16_t col) {
+    for (int r = r0; r < r0 + rw; r++) {
+        uint16_t *row = p + r * 480 + (c_top - ch + 1);
+        if (col == 0) {
+            memset(row, 0, ch * 2);
+        } else {
+            for (int i = 0; i < ch; i++) { row[i] = col; }
+        }
+    }
+}
+
+// Draw horizontal border line (1 row thick, rw rows wide) at col c
+static inline void ss_hline(uint16_t *p, int r0, int c, int rw, uint16_t col) {
+    for (int r = r0; r < r0 + rw; r++) p[r * 480 + c] = col;
+}
+
+// Draw vertical border (ch cols tall) at row r
+static inline void ss_vline(uint16_t *p, int r, int c_top, int ch, uint16_t col) {
+    for (int c = c_top - ch + 1; c <= c_top; c++) p[r * 480 + c] = col;
+}
+
+static void ss_text(uint16_t *p, const char *s, int row, int col, int sc, uint16_t color) {
+    for (int ci = 0; s[ci]; ci++) {
+        unsigned char ch = (unsigned char)s[ci];
+        if (ch >= 128) { row += 6*sc; continue; }
+        for (int fx = 0; fx < 5; fx++) {
+            uint8_t bits = SS_FONT[ch][fx];
+            for (int fy = 0; fy < 7; fy++) {
+                if (bits & (1 << fy)) {
+                    for (int sy = 0; sy < sc; sy++)
+                    for (int sx = 0; sx < sc; sx++) {
+                        int pr = row + fx*sc + sy;
+                        int pc = col - fy*sc - sx;
+                        if (pr >= 0 && pr < 800 && pc >= 0 && pc < 480)
+                            p[pr * 480 + pc] = color;
+                    }
+                }
+            }
+        }
+        row += 6*sc;
+    }
+}
+
+// Pre-rendered menu background cache
+static uint8_t *ss_bg_cache = NULL;
+static int      ss_bg_valid = 0;
+
+static void draw_ss_menu(uint8_t *buf) {
+    uint16_t *p = (uint16_t *)buf;
+    const int SC = 2, CW = 6*SC, CH = 8*SC;
+    const int R0=560, C0=460, RW=220, BH=210;
+
+    // Just draw text directly — game frame overwrites entire buffer each frame
+    // so old text positions are naturally cleared by game pixels
+    ss_text(p, "SAVE STATE", R0+8, C0-8, SC, 0xFFFF);
+
+    char slot_str[24];
+    snprintf(slot_str, sizeof(slot_str), "< Slot %d >", (int)ss_slot);
+    ss_text(p, slot_str, R0+8, C0-8-CH-8, SC, 0x07E0);
+    ss_text(p, ss_exists[ss_slot] ? "SAVED" : "EMPTY",
+            R0+8+11*CW, C0-8-CH-8, SC, ss_exists[ss_slot] ? 0x07E0 : 0x8410);
+
+    const char *items[3] = {"SAVE", "LOAD", "CANCEL"};
+    for (int i = 0; i < 3; i++) {
+        int ic = C0 - 8 - (CH+8)*(i+2) - 8;
+        uint16_t icol = (i == SS_LOAD && !ss_exists[ss_slot]) ? 0x8410 : 0xFFFF;
+        if (ss_cursor == i) ss_text(p, ">", R0+8, ic, SC, 0x07E0);
+        ss_text(p, items[i], R0+8+CW*2, ic, SC, icol);
+    }
+
+    if (ss_toast_f > 0) {
+        ss_toast_f--;
+        ss_text(p, ss_toast, R0+6, C0-BH+CH+8+CH-2, SC, 0xFFFF);
+    }
+}
+static void ss_io_task(void *arg) {
+    for (;;) {
+        xSemaphoreTake(sem_ss, portMAX_DELAY);
+        int op = ss_io_op, slot = ss_slot;
+        char path[340];
+        snprintf(path, sizeof(path), "%s.ss%d", state_save_dir, slot);
+        if (op == 1) {
+            FILE *f = fopen(path, "wb");
+            if (f) { savestate(f); fclose(f); ss_exists[slot] = true;
+                snprintf(ss_toast, sizeof(ss_toast), "Slot %d saved!", slot);
+                ESP_LOGI("howboymatsu", "State saved: %s", path);
+            } else { snprintf(ss_toast, sizeof(ss_toast), "Save failed!"); }
+        } else if (op == 2) {
+            FILE *f = fopen(path, "rb");
+            if (f) { loadstate(f); fclose(f);
+                vram_dirty(); pal_dirty(); sound_dirty(); mem_updatemap();
+                memset(pcm.buf, 0, pcm.len * sizeof(int16_t)); pcm.pos = 0;
+                snprintf(ss_toast, sizeof(ss_toast), "Slot %d loaded!", slot);
+                ESP_LOGI("howboymatsu", "State loaded: %s", path);
+            } else { snprintf(ss_toast, sizeof(ss_toast), "Slot %d empty!", slot); }
+        }
+        ss_toast_f = 120;
+        ss_io_op = 0;
+        ss_drawn_static = 0;
+        ss_clear_region  = 3;
+        ss_state = SS_MENU_CLOSED;
+    }
 }
 
 // --- Main emulator task ---
@@ -569,6 +798,15 @@ void blit_task(void *arg) {
                     }
                 }
             }
+        }
+        // Save state menu overlay (draw directly onto live frame each frame)
+        if (ss_state == SS_MENU_OPEN || ss_state == SS_MENU_SAVING || ss_state == SS_MENU_LOADING) {
+            int64_t t0 = esp_timer_get_time();
+            draw_ss_menu(buf);
+            int64_t t1 = esp_timer_get_time();
+            static int tcnt = 0;
+            if (++tcnt % 60 == 0)
+                ESP_LOGI("howboymatsu", "menu draw us: %lld", (long long)(t1-t0));
         }
         bsp_display_blit(0, 0, PHYS_W, PHYS_H, buf);
         xSemaphoreGive(sem_frame_done);
@@ -719,6 +957,12 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     char *dot = strrchr(sram_path_global, '.');
     if (dot) strcpy(dot, ".sav");
 
+    // Derive state save base path
+    snprintf(state_save_dir, sizeof(state_save_dir), "/sdcard/saves/%s", rom_base);
+    char *sdot = strrchr(state_save_dir, '.');
+    if (sdot) *sdot = '\0';
+    ESP_LOGI(TAG, "State save dir: %s", state_save_dir);
+
     // Load SRAM on startup
     ESP_LOGI(TAG, "SRAM path: %s", sram_path_global);
     FILE *sram_f = fopen(sram_path_global, "rb");
@@ -841,6 +1085,9 @@ vTaskDelay(pdMS_TO_TICKS(500));
         return;
     }
     memset(display_buf, 0, display_h_res * display_v_res * 3);
+    ss_bg_cache = heap_caps_malloc(220 * 210 * 2, MALLOC_CAP_SPIRAM);
+    sem_ss = xSemaphoreCreateBinary();
+    xTaskCreatePinnedToCore(ss_io_task, "ss_io", 8192, NULL, 4, NULL, 0);
     xTaskCreatePinnedToCore(blit_task, "blit", 8192, NULL, 5, &blit_task_handle, 0);
     xTaskCreatePinnedToCore(emulator_task, "emulator", 32768, NULL, 5, NULL, 1);
 }
