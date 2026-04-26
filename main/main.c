@@ -146,6 +146,9 @@ static volatile int  ss_dirty      = 0;
 static volatile int  ss_io_op      = 0;
 static SemaphoreHandle_t sem_ss    = NULL;
 static volatile int  ss_drawn_static = 0;
+static volatile int  ff_speed = 0; // 0=1x 1=2x 2=3x
+static volatile int  ff_flush = 0;
+static volatile int  ff_silence_sent = 0;
 static volatile int  ss_clear_region  = 0; // counts down 2 frames to clear both bufs
 static float gbc_volume = 100.0f;
 static bool show_fps = false;
@@ -321,9 +324,21 @@ void vid_end(void) {
     static int64_t last_time = 0;
     frame_count++;
     if (last_time == 0) last_time = esp_timer_get_time();
-    if (fb.dirty) {
-        draw_gbc_screen();
-        fb.dirty = 0;
+    // Fast forward: ff_speed 0=1x, 1=3x(skip 2), 2=5x(skip 4)
+    static int ff_frame = 0;
+    static const int ff_skip[] = {0, 4, 7}; // 1x, 5x, 8x
+    int skip = ff_skip[ff_speed];
+    if (skip > 0) {
+        ff_frame++;
+        if (ff_frame <= skip) {
+            fb.dirty = 0; // skip render this frame
+        } else {
+            ff_frame = 0;
+            if (fb.dirty) { draw_gbc_screen(); fb.dirty = 0; }
+        }
+    } else {
+        ff_frame = 0;
+        if (fb.dirty) { draw_gbc_screen(); fb.dirty = 0; }
     }
     // Autosave SRAM every hour (~216000 frames at 60fps)
     if (frame_count % 18000 == 0 && frame_count > 0 && sram_path_global[0]) {
@@ -382,6 +397,20 @@ void pcm_init(void) {
 int pcm_submit(void) {
     if (!pcm.buf || pcm.pos == 0) { pcm.pos = 0; return 1; }
     if (!sem_audio_ready || !sem_audio_done) { pcm.pos = 0; return 1; }
+    // Fast forward: flush I2S DMA (6 buffers) with silence, then discard
+    if (ff_speed > 0) {
+        if (ff_silence_sent < 8) {
+            ff_silence_sent++;
+            xSemaphoreTake(sem_audio_done, pdMS_TO_TICKS(50));
+            int16_t *ready = (audio_buf_ready == 0) ? audio_buf_a : audio_buf_b;
+            memset(ready, 0, pcm.len * sizeof(int16_t));
+            audio_buf_len = pcm.len;
+            audio_buf_ready ^= 1;
+            xSemaphoreGive(sem_audio_ready);
+        }
+        pcm.pos = 0;
+        return 1;
+    }
     // Wait for audio task to finish previous buffer
     xSemaphoreTake(sem_audio_done, pdMS_TO_TICKS(30));
     // Copy to ready buffer and signal
@@ -459,7 +488,16 @@ void doevents(void) {
                             xSemaphoreGive(sem_ss);
                         }
                         break;
-                    case BSP_INPUT_NAVIGATION_KEY_F4:
+                    case BSP_INPUT_NAVIGATION_KEY_F6:
+                    if (pressed) {
+                        ff_speed = (ff_speed + 1) % 3;
+                        const char *ff_labels[] = {"OFF", "5x", "8x"};
+                        ESP_LOGI(TAG, "Fast forward: %s", ff_labels[ff_speed]);
+
+
+                    }
+                    break;
+                case BSP_INPUT_NAVIGATION_KEY_F4:
                         ss_state = SS_MENU_CLOSED; break;
                     default: break;
                 }
@@ -501,6 +539,15 @@ void doevents(void) {
                         if (gbc_volume < 0.0f) gbc_volume = 0.0f;
                         bsp_audio_set_volume(gbc_volume);
                         ESP_LOGI(TAG, "Volume: %.0f%%", gbc_volume);
+                    }
+                    break;
+                case BSP_INPUT_NAVIGATION_KEY_F6:
+                    if (pressed) {
+                        ff_speed = (ff_speed + 1) % 3;
+                        const char *ff_labels[] = {"OFF", "5x", "8x"};
+                        ESP_LOGI(TAG, "Fast forward: %s", ff_labels[ff_speed]);
+
+
                     }
                     break;
                 case BSP_INPUT_NAVIGATION_KEY_F4:
@@ -1006,10 +1053,17 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
 void audio_task(void *arg) {
     i2s_chan_handle_t i2s = NULL;
     bsp_audio_get_i2s_handle(&i2s);
+    static int16_t silence[4096] = {0};
+    size_t written = 0;
     while (1) {
+        if (ff_flush > 0) {
+            if (i2s) i2s_channel_write(i2s, silence, pcm.len * sizeof(int16_t), &written, pdMS_TO_TICKS(100));
+            ff_flush--;
+            xSemaphoreGive(sem_audio_done); // keep pcm_submit unblocked
+            continue;
+        }
         xSemaphoreTake(sem_audio_ready, portMAX_DELAY);
         int16_t *buf = (audio_buf_ready == 0) ? audio_buf_b : audio_buf_a;
-        size_t written = 0;
         if (i2s) i2s_channel_write(i2s, buf, audio_buf_len * sizeof(int16_t), &written, pdMS_TO_TICKS(100));
         xSemaphoreGive(sem_audio_done);
     }
