@@ -64,6 +64,9 @@ static volatile uint8_t active_render_buf = 0;
 static SemaphoreHandle_t sem_frame_ready = NULL;
 static SemaphoreHandle_t sem_frame_done = NULL;
 static TaskHandle_t blit_task_handle = NULL;
+static TaskHandle_t audio_task_handle = NULL;
+static TaskHandle_t emulator_task_handle = NULL;
+static SemaphoreHandle_t sem_emulator_done = NULL;
 static volatile bool sram_load_done = false;
 
 // Export tables - stubs to satisfy the linker
@@ -147,6 +150,10 @@ static volatile int  ss_io_op      = 0;
 static SemaphoreHandle_t sem_ss    = NULL;
 static volatile int  ss_drawn_static = 0;
 static volatile int  ff_speed = 0; // 0=1x 1=2x 2=3x
+static volatile int  return_to_selector = 0;
+static volatile int  i2s_enabled = 1;
+static volatile int  audio_mute = 0;
+static SemaphoreHandle_t sem_audio_shutdown = NULL;
 static volatile int  ff_flush = 0;
 static volatile int  ff_silence_sent = 0;
 static volatile int  ss_clear_region  = 0; // counts down 2 frames to clear both bufs
@@ -522,6 +529,23 @@ void vid_end(void) {
     static int64_t last_time = 0;
     frame_count++;
     if (last_time == 0) last_time = esp_timer_get_time();
+    if (return_to_selector) {
+        bsp_audio_set_volume(0);
+        if (blit_task_handle) vTaskSuspend(blit_task_handle);
+        if (render_buf_a) memset(render_buf_a, 0, 480 * 800 * 2);
+        if (render_buf_b) memset(render_buf_b, 0, 480 * 800 * 2);
+        bsp_display_blit(0, 0, 480, 800, render_buf_a);
+        vTaskDelay(pdMS_TO_TICKS(30));
+        bsp_display_blit(0, 0, 480, 800, render_buf_a);
+        // Disable I2S if still enabled
+        if (i2s_enabled) {
+            i2s_chan_handle_t i2s_ve = NULL;
+            bsp_audio_get_i2s_handle(&i2s_ve);
+            if (i2s_ve) { i2s_channel_disable(i2s_ve); i2s_enabled = 0; }
+        }
+        if (sem_emulator_done) xSemaphoreGive(sem_emulator_done);
+        vTaskDelete(NULL);
+    }
     // Fast forward: ff_speed 0=1x, 1=3x(skip 2), 2=5x(skip 4)
     static int ff_frame = 0;
     static const int ff_skip[] = {0, 4, 7}; // 1x, 5x, 8x
@@ -586,13 +610,14 @@ void pcm_init(void) {
     sem_audio_ready = xSemaphoreCreateBinary();
     sem_audio_done  = xSemaphoreCreateBinary();
     xSemaphoreGive(sem_audio_done);
-    xTaskCreatePinnedToCore(audio_task, "audio", 4096, NULL, 6, NULL, 0);
+    xTaskCreatePinnedToCore(audio_task, "audio", 4096, NULL, 6, &audio_task_handle, 0);
     pcm.pos    = 0;
     memset(pcm.buf, 0, pcm.len * sizeof(int16_t));
     ESP_LOGI(TAG, "Audio initialized at %dHz stereo len=%d", pcm.hz, pcm.len);
 }
 
 int pcm_submit(void) {
+    if (audio_mute) { pcm.pos = 0; return 1; }
     if (!pcm.buf || pcm.pos == 0) { pcm.pos = 0; return 1; }
     if (!sem_audio_ready || !sem_audio_done) { pcm.pos = 0; return 1; }
     // Fast forward: flush I2S DMA (6 buffers) with silence, then discard
@@ -801,6 +826,22 @@ void doevents(void) {
                     pad_set(PAD_START, 1); key_release_time[2] = release_at; break;
                 case ' ':
                     pad_set(PAD_SELECT, 1); key_release_time[3] = release_at; break;
+                case '\b': case 127: // backspace — return to ROM selector
+                    if (sram_path_global[0]) {
+                        FILE *sf = fopen(sram_path_global, "wb");
+                        if (sf) { sram_save(sf); fclose(sf); ESP_LOGI(TAG, "SRAM saved on ROM selector return"); }
+                        char rtc_path_bs[320];
+                        strncpy(rtc_path_bs, sram_path_global, sizeof(rtc_path_bs)-1);
+                        char *rdot_bs = strrchr(rtc_path_bs, '.');
+                        if (rdot_bs) strcpy(rdot_bs, ".rtc");
+                        FILE *rf_bs = fopen(rtc_path_bs, "wb");
+                        if (rf_bs) { rtc_save(rf_bs); }
+                    }
+                    bsp_audio_set_amplifier(false);
+                    bsp_audio_set_volume(0);
+                    audio_mute = 1;
+                    return_to_selector = 1;
+                    break;
                 default: break;
             }
         }
@@ -1058,6 +1099,9 @@ void blit_task(void *arg) {
     }
 }
 void emulator_task(void *arg) {
+    // Skip SD mount if already mounted (return_to_selector loop)
+    static int sd_mounted = 0;
+    if (sd_mounted) goto sd_already_mounted;
     ESP_LOGI(TAG, "Mounting SD card...");
 
 sdmmc_host_t host = SDMMC_HOST_DEFAULT();
@@ -1083,6 +1127,8 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
         bsp_device_restart_to_launcher();
     }
     ESP_LOGI(TAG, "SD card mounted at /sdcard");
+    sd_mounted = 1;
+    sd_already_mounted:;
 
     // Diagnostic - list what's on the SD card
   DIR *romsdir = opendir("/sdcard/roms");
@@ -1117,6 +1163,10 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     if (rom_count == 1) {
         rom_path = rom_list[0];
     } else if (rom_count > 1) {
+        return_to_selector = 0;
+        ff_speed = 0;
+        ff_silence_sent = 0;
+        if (blit_task_handle) vTaskResume(blit_task_handle);
         rom_path = rom_selector();
     }
     if (!rom_path) {
@@ -1242,6 +1292,17 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
         sound_dirty();
         mem_updatemap();
     }
+    // Unmute audio now that ROM is loaded and ready to run
+    audio_mute = 0;
+    xSemaphoreTake(sem_audio_done, 0);
+    xSemaphoreGive(sem_audio_done);
+    if (!i2s_enabled) {
+        i2s_chan_handle_t i2s_chk = NULL;
+        bsp_audio_get_i2s_handle(&i2s_chk);
+        if (i2s_chk) { i2s_channel_enable(i2s_chk); i2s_enabled = 1; }
+    }
+    bsp_audio_set_volume(gbc_volume);
+    bsp_audio_set_amplifier(true);
     emu_run();
 
     vTaskDelete(NULL);
@@ -1257,12 +1318,20 @@ void audio_task(void *arg) {
         if (ff_flush > 0) {
             if (i2s) i2s_channel_write(i2s, silence, pcm.len * sizeof(int16_t), &written, pdMS_TO_TICKS(100));
             ff_flush--;
-            xSemaphoreGive(sem_audio_done); // keep pcm_submit unblocked
+            xSemaphoreGive(sem_audio_done);
             continue;
         }
+        // Wait for a buffer to be ready
         xSemaphoreTake(sem_audio_ready, portMAX_DELAY);
+        if (audio_mute) {
+            if (i2s && i2s_enabled)
+                i2s_channel_write(i2s, silence, pcm.len * sizeof(int16_t), &written, pdMS_TO_TICKS(100));
+            if (sem_audio_shutdown) xSemaphoreGive(sem_audio_shutdown);
+            xSemaphoreGive(sem_audio_done);
+            continue;
+        }
         int16_t *buf = (audio_buf_ready == 0) ? audio_buf_b : audio_buf_a;
-        if (i2s) i2s_channel_write(i2s, buf, audio_buf_len * sizeof(int16_t), &written, pdMS_TO_TICKS(100));
+        if (i2s && i2s_enabled) i2s_channel_write(i2s, buf, audio_buf_len * sizeof(int16_t), &written, pdMS_TO_TICKS(100));
         xSemaphoreGive(sem_audio_done);
     }
 }
@@ -1341,5 +1410,22 @@ vTaskDelay(pdMS_TO_TICKS(500));
     sem_ss = xSemaphoreCreateBinary();
     xTaskCreatePinnedToCore(ss_io_task, "ss_io", 8192, NULL, 4, NULL, 0);
     xTaskCreatePinnedToCore(blit_task, "blit", 8192, NULL, 5, &blit_task_handle, 0);
-    xTaskCreatePinnedToCore(emulator_task, "emulator", 32768, NULL, 5, NULL, 1);
+    // Main loop: supports returning to ROM selector without hardware restart
+    while (1) {
+        sem_emulator_done = xSemaphoreCreateBinary();
+        return_to_selector = 0;
+        ff_speed = 0;
+        ff_silence_sent = 0;
+        if (blit_task_handle) vTaskResume(blit_task_handle);
+        xTaskCreatePinnedToCore(emulator_task, "emulator", 32768, NULL, 5, &emulator_task_handle, 1);
+        xSemaphoreTake(sem_emulator_done, portMAX_DELAY);
+        vSemaphoreDelete(sem_emulator_done);
+        sem_emulator_done = NULL;
+        emulator_task_handle = NULL;
+        if (!return_to_selector) break;
+        // Audio is already muted via codec volume=0 and amplifier=false
+        // Just reset pcm state for clean start
+        if (pcm.buf) { memset(pcm.buf, 0, pcm.len * sizeof(int16_t)); pcm.pos = 0; }
+        sound_dirty();
+    }
 }
