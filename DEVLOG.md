@@ -137,3 +137,67 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 6. Overclocking
 7. Netplay
 8. Input Mapping Profiles
+
+---
+
+## Session Apr 27 2026
+
+### Fix: Double HowBoyMatsu directory
+
+The repo had been cloned into `~/HowBoyMatsu/HowBoyMatsu`. Cleaned up by removing the
+nested copy and pulling fresh from GitHub. All commands now use `~/HowBoyMatsu` as root.
+
+### Commands Reference (updated)
+
+**Build:**
+```bash
+cd ~/HowBoyMatsu && make build DEVICE=tanmatsu
+```
+
+**Build + Upload (one liner):**
+```bash
+cd ~/HowBoyMatsu && make build DEVICE=tanmatsu && sudo chmod 666 /dev/ttyACM1 && cd badgelink/tools && sudo ./badgelink.sh appfs upload application "HowBoyMatsu" 0 ~/HowBoyMatsu/build/tanmatsu/application.bin
+```
+
+**Monitor:**
+```bash
+cd ~/HowBoyMatsu && make monitor DEVICE=tanmatsu PORT=/dev/ttyACM0
+```
+
+### Fix: F1 Return to Launcher
+
+**Problem:** F1 in-game was returning to the ROM selector instead of the Tanmatsu launcher.
+
+**Root cause:** `bsp_device_restart_to_launcher()` in BSP v0.9.3 is a broken stub for
+IDF 5.5 — it only calls `esp_restart()` without clearing the appfs boot selection. The
+appfs bootloader sees the retained boot handle and relaunches the app automatically.
+
+**Fix:** Added `restart_to_launcher()` helper that clears `mem->custom` (zeroing the
+appfs bootsel magic) then calls `esp_restart()`. Replaced all `bsp_device_restart_to_launcher()` calls.
+
+```c
+#include "bootloader_common.h"
+
+static void restart_to_launcher(void) {
+    rtc_retain_mem_t* mem = bootloader_common_get_rtc_retain_mem();
+    memset(mem->custom, 0, sizeof(mem->custom));
+    esp_restart();
+}
+```
+
+### Planned Features (status)
+
+- [x] Button Config Swap — partially explored, reverted. Clean rework next session.
+- [x] Return to Main Menu — FIXED (F1 now correctly returns to Tanmatsu launcher)
+- [ ] Reverse Gameplay (Rewind)
+- [ ] Internal Resolution Scaling
+- [ ] Texture Filtering / Shaders
+- [ ] Overclocking
+- [ ] Netplay
+- [ ] Input Mapping Profiles
+
+### Notes for Next Session
+
+**Button Layout Switcher** — two presets, F2 cycles between them:
+- Layout 1 (Default): D-pad=directions, a=A, d=B, Enter=Start, Space=Select
+- Layout 2 (WASD): w/a/s/d=directions, l=A, p=B, Enter=Start, Space=Select
