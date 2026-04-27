@@ -2,6 +2,8 @@
 #include <string.h>
 #include <stdarg.h>
 #include "bsp/device.h"
+#include "bootloader_common.h"
+#include "esp_system.h"
 #include "bsp/display.h"
 #include "bsp/audio.h"
 #include "driver/i2s_std.h"
@@ -117,6 +119,12 @@ void vid_setpal(int i, int r, int g, int b);
 int  pcm_submit(void);
 void audio_task(void *arg);
 void sys_sleep(int us);
+static void restart_to_launcher(void) {
+    rtc_retain_mem_t* mem = bootloader_common_get_rtc_retain_mem();
+    memset(mem->custom, 0, sizeof(mem->custom));
+    esp_restart();
+}
+
 void doevents(void);
 void savestate(FILE *f);
 void loadstate(FILE *f);
@@ -438,7 +446,7 @@ static const char *rom_selector(void) {
                         }
                         bsp_audio_set_volume(0);
                         vTaskDelay(pdMS_TO_TICKS(150));
-                        bsp_device_restart_to_launcher();
+                        restart_to_launcher();
                         break;
                     default: break;
                 }
@@ -810,7 +818,7 @@ void doevents(void) {
                         }
                         bsp_audio_set_volume(0);
                         vTaskDelay(pdMS_TO_TICKS(150));
-                        bsp_device_restart_to_launcher();
+                        restart_to_launcher();
                     }
                     break;
                 default: break;
@@ -1124,7 +1132,7 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     esp_err_t ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot_config, &mount_config, &card);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to mount SD card: %s", esp_err_to_name(ret));
-        bsp_device_restart_to_launcher();
+        restart_to_launcher();
     }
     ESP_LOGI(TAG, "SD card mounted at /sdcard");
     sd_mounted = 1;
@@ -1178,7 +1186,7 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
             bsp_input_event_t ev2;
             if (xQueueReceive(input_event_queue, &ev2, portMAX_DELAY) == pdTRUE)
                 if (ev2.type == INPUT_EVENT_TYPE_NAVIGATION && ev2.args_navigation.key == BSP_INPUT_NAVIGATION_KEY_F1 && ev2.args_navigation.state == 1)
-                    bsp_device_restart_to_launcher();
+                    restart_to_launcher();
         }
     }
     ESP_LOGI(TAG, "Loading ROM from %s", rom_path);
@@ -1197,7 +1205,7 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
             if (xQueueReceive(input_event_queue, &ev, portMAX_DELAY) == pdTRUE) {
                 if (ev.type == INPUT_EVENT_TYPE_NAVIGATION &&
                     ev.args_navigation.key == BSP_INPUT_NAVIGATION_KEY_F1) {
-                    bsp_device_restart_to_launcher();
+                    restart_to_launcher();
                 }
             }
         }
@@ -1233,7 +1241,7 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     if (rom_data == NULL) {
         ESP_LOGE(TAG, "Failed to allocate %d bytes for ROM", rom_length);
         fclose(rom_fd);
-        bsp_device_restart_to_launcher();
+        restart_to_launcher();
     }
 
     // Read ROM into memory
