@@ -17,6 +17,7 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 - **Fast Forward** — 5× and 8× speed modes with audio muted during FF (F6)
 - **FPS counter** — toggle with ESC key, displayed top-right in green
 - **Clean launcher exit** — press F1 to save and return to the Tanmatsu launcher
+- **Return to ROM selector** — press Backspace during gameplay to save and return to the ROM selector without a hardware restart
 
 ## Button Mapping
 | Tanmatsu | Action |
@@ -31,6 +32,7 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 | F1 | Save & return to launcher |
 | F4 | Save State menu (10 slots) |
 | F6 | Fast Forward (OFF → 5× → 8× → OFF) |
+| Backspace | Return to ROM selector |
 
 ## Save States
 Press **F4** to open the save state menu. The game continues running in the background.
@@ -40,6 +42,15 @@ Press **F4** to open the save state menu. The game continues running in the back
 - **B or F4** — close menu
 
 Save files are stored at `/sdcard/saves/<romname>.ssN`.
+
+## ROM Selector
+The ROM selector displays all `.gb` and `.gbc` files found in `/sdcard/roms/`. Navigation is instant — the selector uses a direct pixel renderer bypassing PAX rotation, achieving full redraws in ~14ms.
+
+- **D-pad Up/Down** — move selection
+- **A or Enter** — launch ROM
+- **F1** — save and return to launcher
+
+Press **Backspace** at any time during gameplay to save SRAM/RTC and return to the ROM selector without a hardware restart.
 
 ## Fast Forward
 Press **F6** to cycle through speed modes:
@@ -62,14 +73,13 @@ Place `.gb` and `.gbc` ROM files in `/sdcard/roms/` on your SD card. Save files 
 | # | Feature | Notes |
 |---|---------|-------|
 | 1 | **Button Config Swap** | Swap button layouts on the fly |
-| 2 | **Return to ROM Launcher** | Jump back to the ROM selector without full restart |
-| 3 | **Return to Main Menu** | Return to the Tanmatsu main launcher menu |
-| 4 | **Reverse Gameplay** | Circular frame buffer rewind — memory intensive |
-| 5 | **Internal Resolution Scaling** | Dynamic `SCALE` factor beyond 1:1 |
-| 6 | **Texture Filtering / Shaders** | Post-process pass on PAX framebuffer |
-| 7 | **Overclocking** | ESP32-P4 CPU freq tuning via `esp_pm` |
-| 8 | **Netplay** | WiFi link cable emulation |
-| 9 | **Input Mapping Profiles** | Multiple button layout presets stored in NVS |
+| 2 | **Return to Main Menu** | Return to the Tanmatsu main launcher menu |
+| 3 | **Reverse Gameplay** | Circular frame buffer rewind — memory intensive |
+| 4 | **Internal Resolution Scaling** | Dynamic `SCALE` factor beyond 1:1 |
+| 5 | **Texture Filtering / Shaders** | Post-process pass on PAX framebuffer |
+| 6 | **Overclocking** | ESP32-P4 CPU freq tuning via `esp_pm` |
+| 7 | **Netplay** | WiFi link cable emulation |
+| 8 | **Input Mapping Profiles** | Multiple button layout presets stored in NVS |
 
 ---
 
