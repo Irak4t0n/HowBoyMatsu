@@ -147,6 +147,16 @@ static char state_save_dir[320]   = {0};
 #define SS_LOAD   1
 #define SS_CANCEL 2
 
+// Menu rect in PAX coords. Must match draw_ss_menu's R0/RW/C0/BH.
+// vid_end uses these to skip the menu region when the menu is open,
+// so the menu draw cost only pays off on first frame after invalidation.
+#define SS_MENU_R0   560
+#define SS_MENU_RW   220
+#define SS_MENU_C0   460
+#define SS_MENU_BH   150
+#define SS_MENU_COL_LO (SS_MENU_C0 - SS_MENU_BH + 1)   // 311
+#define SS_MENU_COL_HI (SS_MENU_C0 + 1)                // 461
+
 static volatile int  ss_state      = SS_MENU_CLOSED;
 static volatile int  ss_slot       = 0;
 static volatile int  ss_cursor     = SS_SAVE;
@@ -157,6 +167,10 @@ static volatile int  ss_dirty      = 0;
 static volatile int  ss_io_op      = 0;
 static SemaphoreHandle_t sem_ss    = NULL;
 static volatile int  ss_drawn_static = 0;
+// Per-buffer flag: 1 = menu has been rendered into this buffer and game render skips it
+static volatile int  ss_menu_drawn_a = 0;
+static volatile int  ss_menu_drawn_b = 0;
+static inline void ss_menu_invalidate(void) { ss_menu_drawn_a = 0; ss_menu_drawn_b = 0; }
 static volatile int  ff_speed = 0; // 0=1x 1=2x 2=3x
 static volatile int  return_to_selector = 0;
 static volatile int  i2s_enabled = 1;
@@ -483,6 +497,10 @@ void draw_gbc_screen(void) {
         init_done = 1;
     }
 
+    // When the save-state menu is open, skip writing the menu rect so the
+    // pre-rendered menu pixels persist across frames (avoids per-frame redraw cost).
+    int menu_open = (ss_state == SS_MENU_OPEN || ss_state == SS_MENU_SAVING || ss_state == SS_MENU_LOADING);
+
     for (int gx = 0; gx < GBC_W; gx++) {
         uint16_t *rp = scaled_row_565;
         for (int gy = GBC_H - 1; gy >= 0; gy--) {
@@ -497,7 +515,16 @@ void draw_gbc_screen(void) {
         int row_start = gx * V_SCALE;
         for (int rep = 0; rep < V_SCALE; rep++) {
             int row = row_start + rep;
-            memcpy(phys + row * PHYS_W, scaled_row_565, PHYS_W * 2);
+            uint16_t *dst = phys + row * PHYS_W;
+            if (menu_open && row >= SS_MENU_R0 && row < SS_MENU_R0 + SS_MENU_RW) {
+                // Two side-strips around the menu rect
+                if (SS_MENU_COL_LO > 0)
+                    memcpy(dst, scaled_row_565, SS_MENU_COL_LO * 2);
+                if (SS_MENU_COL_HI < PHYS_W)
+                    memcpy(dst + SS_MENU_COL_HI, scaled_row_565 + SS_MENU_COL_HI, (PHYS_W - SS_MENU_COL_HI) * 2);
+            } else {
+                memcpy(dst, scaled_row_565, PHYS_W * 2);
+            }
         }
     }
 
@@ -732,6 +759,7 @@ void doevents(void) {
                         ss_state = SS_MENU_CLOSED; break;
                     default: break;
                 }
+                ss_menu_invalidate(); // any handled key may have changed cursor/slot/state
                 continue; // swallow all input while menu open
             }
 
@@ -793,6 +821,7 @@ void doevents(void) {
                         ss_drawn_static = 0;
                         ss_clear_region  = 0;
                         ss_state = SS_MENU_OPEN;
+                        ss_menu_invalidate();
                     }
                     break;
                 case BSP_INPUT_NAVIGATION_KEY_F1:
@@ -914,15 +943,23 @@ static const uint8_t SS_FONT[128][5] = {
 // Physical buffer: row 0-799 = landscape X, col 0-479 = landscape Y (high=top)
 // Text: row increases per char (left→right), col decreases per font row (top→down)
 
-// Fill a rectangle using memset per row — fast, no inner pixel loop
+// Fill a rectangle. memset() for black; 32-bit-at-a-time pixel-pair writes
+// for non-zero colors (halves PSRAM transactions vs per-pixel loop).
 static inline void ss_rect(uint16_t *p, int r0, int c_top, int rw, int ch, uint16_t col) {
+    if (col == 0) {
+        for (int r = r0; r < r0 + rw; r++) {
+            memset(p + r * 480 + (c_top - ch + 1), 0, ch * 2);
+        }
+        return;
+    }
+    uint32_t col32 = ((uint32_t)col << 16) | col;
+    int pairs = ch >> 1;
+    int rem   = ch & 1;
     for (int r = r0; r < r0 + rw; r++) {
         uint16_t *row = p + r * 480 + (c_top - ch + 1);
-        if (col == 0) {
-            memset(row, 0, ch * 2);
-        } else {
-            for (int i = 0; i < ch; i++) { row[i] = col; }
-        }
+        uint32_t *row32 = (uint32_t *)row;          // row start is 4-byte aligned (rows are 480*2 = 960 bytes apart)
+        for (int i = 0; i < pairs; i++) row32[i] = col32;
+        if (rem) row[ch - 1] = col;
     }
 }
 
@@ -965,10 +1002,14 @@ static int      ss_bg_valid = 0;
 static void draw_ss_menu(uint8_t *buf) {
     uint16_t *p = (uint16_t *)buf;
     const int SC = 2, CW = 6*SC, CH = 8*SC;
-    const int R0=560, C0=460, RW=220, BH=210;
+    const int R0=SS_MENU_R0, C0=SS_MENU_C0, RW=SS_MENU_RW, BH=SS_MENU_BH;
 
-    // Just draw text directly — game frame overwrites entire buffer each frame
-    // so old text positions are naturally cleared by game pixels
+    // Dark background panel + green border for visibility
+    ss_rect(p, R0, C0, RW, BH, 0x1083);
+    ss_hline(p, R0,       C0,       RW, 0x07E0);
+    ss_hline(p, R0,       C0-BH+1,  RW, 0x07E0);
+    ss_vline(p, R0,       C0,       BH, 0x07E0);
+    ss_vline(p, R0+RW-1,  C0,       BH, 0x07E0);
     ss_text(p, "SAVE STATE", R0+8, C0-8, SC, 0xFFFF);
 
     char slot_str[24];
@@ -1016,6 +1057,7 @@ static void ss_io_task(void *arg) {
         ss_drawn_static = 0;
         ss_clear_region  = 3;
         ss_state = SS_MENU_CLOSED;
+        ss_menu_invalidate();
     }
 }
 
@@ -1093,14 +1135,24 @@ void blit_task(void *arg) {
                 }
             }
         }
-        // Save state menu overlay (draw directly onto live frame each frame)
+        // Save state menu overlay. Only redraw when the current buffer doesn't
+        // already have the menu (just opened, state changed) or while a toast
+        // is animating. vid_end skips the menu rect when the menu is open, so
+        // the menu pixels persist across frames without being overwritten.
         if (ss_state == SS_MENU_OPEN || ss_state == SS_MENU_SAVING || ss_state == SS_MENU_LOADING) {
-            int64_t t0 = esp_timer_get_time();
-            draw_ss_menu(buf);
-            int64_t t1 = esp_timer_get_time();
-            static int tcnt = 0;
-            if (++tcnt % 60 == 0)
-                ESP_LOGI("howboymatsu", "menu draw us: %lld", (long long)(t1-t0));
+            int dirty = (active_render_buf == 0) ? !ss_menu_drawn_a : !ss_menu_drawn_b;
+            if (dirty || ss_toast_f > 0) {
+                int64_t t0 = esp_timer_get_time();
+                draw_ss_menu(buf);
+                int64_t t1 = esp_timer_get_time();
+                ESP_LOGI("howboymatsu", "menu draw us: %lld (buf=%c)", (long long)(t1-t0),
+                         active_render_buf == 0 ? 'A' : 'B');
+                if (active_render_buf == 0) ss_menu_drawn_a = 1;
+                else                        ss_menu_drawn_b = 1;
+            }
+        } else {
+            ss_menu_drawn_a = 0;
+            ss_menu_drawn_b = 0;
         }
         bsp_display_blit(0, 0, PHYS_W, PHYS_H, buf);
         xSemaphoreGive(sem_frame_done);

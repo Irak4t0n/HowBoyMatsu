@@ -41,6 +41,11 @@ Press **F4** to open the save state menu. The game continues running in the back
 - **A** — confirm (Save/Load/Cancel)
 - **B or F4** — close menu
 
+The menu renders on a dark navy background panel with a green border so it stays
+readable on top of any game scene. The panel is drawn once when the menu opens
+(and again on cursor / slot changes) — the game blit skips the menu rect on
+subsequent frames so it persists without per-frame redraw cost.
+
 Save files are stored at `/sdcard/saves/<romname>.ssN`.
 
 ## ROM Selector

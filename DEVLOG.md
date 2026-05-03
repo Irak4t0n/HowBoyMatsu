@@ -201,3 +201,120 @@ static void restart_to_launcher(void) {
 **Button Layout Switcher** — two presets, F2 cycles between them:
 - Layout 1 (Default): D-pad=directions, a=A, d=B, Enter=Start, Space=Select
 - Layout 2 (WASD): w/a/s/d=directions, l=A, p=B, Enter=Start, Space=Select
+
+---
+
+## Session May 3 2026
+
+### Switched to Windows + Native ESP-IDF
+
+Old environment was Linux + Makefile-driven build pinned to ESP-IDF v5.5.1.
+New environment is Windows + native ESP-IDF PowerShell, no Makefile (its
+`SHELL := /usr/bin/env bash` and `source export.sh` directives are bash-only).
+
+**Critical:** the project must be built against **ESP-IDF v5.5.1 specifically**.
+v5.5.4 (the version the Espressif Windows installer offered by default) builds
+clean but the resulting binary blue-screens on launch — likely a managed-component
+ABI drift (`badge-bsp 0.9.5` vs the 0.9.3 the Apr 27 build pinned, plus other
+component bumps). Cloning v5.5.1 alongside and building against it fixes the
+crash:
+
+```powershell
+git clone -b v5.5.1 --recursive --depth 1 https://github.com/espressif/esp-idf.git C:\Users\Howar\esp-idf-5.5.1
+cd C:\Users\Howar\esp-idf-5.5.1; .\install.ps1 esp32p4
+```
+
+Each new shell needs `. C:\Users\Howar\esp-idf-5.5.1\export.ps1` before `idf.py`.
+
+**Build (Windows-equivalent of `make build DEVICE=tanmatsu`):**
+
+```powershell
+idf.py -B build/tanmatsu build -DDEVICE=tanmatsu -DSDKCONFIG_DEFAULTS="sdkconfigs/general;sdkconfigs/tanmatsu" -DSDKCONFIG=sdkconfig_tanmatsu -DIDF_TARGET=esp32p4
+```
+
+### Tanmatsu USB Layout (Windows)
+
+The Tanmatsu exposes **two separate USB-CDC interfaces**, one per chip:
+- **COM15** = ESP32-P4 main chip (HowBoyMatsu console output, `idf.py monitor`)
+- **COM16** = ESP32-C6 coprocessor (radio firmware `tanmatsu-radio`)
+
+When the launcher is in **"USB / Badgelink mode"** (purple-diamond key → USB icon
+top-right), it re-enumerates a separate composite device with the legacy Badge.team
+WebUSB descriptor **VID `0x16D0` PID `0x0F9A`** — that's the device badgelink
+talks to. WCID-bound to Windows' built-in WinUSB driver automatically; no Zadig
+needed. Just need libusb-1.0.dll (x86_64) dropped in `badgelink/tools/libraries/`.
+
+`idf.py monitor` on Windows needs `$env:PYTHONIOENCODING="utf-8"` and
+`[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` set first, otherwise
+the launcher's USB descriptor table (printed with Unicode box-drawing characters)
+crashes the monitor with a `cp1252 codec can't encode ┌` error.
+
+### Save State Menu — Background Panel + Persistent-Render Architecture
+
+**Goal:** the save state menu was hard to read against bright/busy game scenes.
+Add a dark background panel + green border behind the menu text.
+
+**v1 (works visually, breaks audio):** Filled a 220×210 dark navy panel + 4
+border lines + text in `draw_ss_menu` every frame. Visually correct, but:
+- Menu draw cost: ~1.78 ms per frame
+- FPS dropped 60 → 56 while menu open
+- Audio crackled — buffer is exactly 1 frame (1470 samples @ 44.1kHz = 16.67 ms),
+  so any frame slowdown causes I2S underrun
+
+Profiling showed PSRAM-bandwidth-bound (writing 92KB/frame at the chip's
+~52MB/s ceiling = ~1.78 ms — no CPU-side optimization will help).
+
+**v2 (architectural fix):** Don't redraw the menu every frame.
+- New `SS_MENU_R0/RW/C0/BH` constants — single source of truth for the rect
+- New `ss_menu_drawn_a` / `ss_menu_drawn_b` per-buffer flags
+- `vid_end` skips writing the menu rect when `ss_state` is open (game render
+  splits each row into two memcpys around the menu rect — adds ~165 µs/frame)
+- `blit_task` only calls `draw_ss_menu` when the current buffer's `drawn` flag
+  is 0 (just-opened or invalidated) or while a toast is animating
+- `ss_menu_invalidate()` called at every state change (open, cursor move, slot
+  change, save/load completion)
+
+Result: menu draws **once per buffer per state change** (~4 draws per open/close
+cycle) instead of ~60/sec. FPS during menu-open returned to 60. Audio crackle
+greatly reduced.
+
+**Known issue:** Slight residual audio distortion remains even with FPS at 60
+during menu open. Suspected causes (not yet investigated):
+1. Per-row memcpy split in `vid_end` adds jitter inside the tight 16.67 ms
+   audio buffer window
+2. EMI/electrical: solid dark menu pixels change LCD power draw pattern,
+   could couple into the ES8156 audio rail
+3. PSRAM bus contention between blit and audio task
+
+Tolerable for now. Possible next-session diagnostic: revert the `vid_end` skip
+(keep the dirty-flag system) to isolate which sub-cause it is.
+
+### `ss_rect` Optimization (kept, didn't help)
+
+Replaced the `for (int i = 0; i < ch; i++) row[i] = col;` inner loop with
+32-bit pixel-pair writes (one `uint32_t` = 2 packed `uint16_t` pixels):
+
+```c
+uint32_t col32 = ((uint32_t)col << 16) | col;
+for (int i = 0; i < ch >> 1; i++) row32[i] = col32;
+```
+
+Halves the number of PSRAM transactions but didn't measurably reduce draw time —
+PSRAM bandwidth, not CPU, is the bottleneck. Kept the change anyway because
+it's strictly better and the architectural fix made the per-frame cost moot.
+
+### Files Changed
+- `main/main.c` — all of the above
+- `README.md` — note the new background panel under Save States
+- `.gitignore` — `.claude/` (Claude Code session state)
+
+### Planned Features (status)
+- [x] Save State Menu Visibility — FIXED (dark panel + persistent-render)
+- [ ] Reverse Gameplay (Rewind)
+- [ ] Internal Resolution Scaling
+- [ ] Texture Filtering / Shaders
+- [ ] Overclocking
+- [ ] Netplay
+- [ ] Input Mapping Profiles
+- [ ] Button Layout Switcher (carried over from Apr 27 session)
+- [ ] Investigate residual audio distortion when save state menu is open
