@@ -330,6 +330,7 @@ it's strictly better and the architectural fix made the per-frame cost moot.
 ### Planned Features (status)
 - [x] Save State Menu Visibility — FIXED (dark panel + persistent-render)
 - [x] Button Layout Switcher — FIXED (F2 menu, Default / WASD)
+- [x] Soft Reset — FIXED (F3 resets game to title screen, SRAM preserved)
 - [ ] Reverse Gameplay (Rewind)
 - [ ] Internal Resolution Scaling
 - [ ] Texture Filtering / Shaders
@@ -417,3 +418,50 @@ and its last video frame was visible before the new ROM started.
 
 ### Files Changed
 - `main/main.c` — `pcm_init()` idempotency guard, `gbc_pixels` clear before `emu_run()`
+
+---
+
+## Session May 3 2026 (continued — F3 soft reset)
+
+### Feature: Soft Reset (F3)
+
+**Goal:** Press F3 during gameplay to reset the current game back to its title screen
+without exiting to the ROM selector or launcher.
+
+**Implementation:**
+
+`BSP_INPUT_NAVIGATION_KEY_F3` handler added to the main navigation switch in `doevents()`,
+guarded so it only fires when both the save state menu and layout menu are closed:
+
+```c
+case BSP_INPUT_NAVIGATION_KEY_F3:
+    if (pressed && ss_state == SS_MENU_CLOSED && !layout_menu_open) {
+        memset(gbc_pixels, 0, sizeof(gbc_pixels));
+        emu_reset();
+        vram_dirty();
+        pal_dirty();
+        sound_dirty();
+        mem_updatemap();
+        pcm_init();
+        ESP_LOGI(TAG, "Soft reset");
+    }
+    break;
+```
+
+`emu_reset()` (in `components/gnuboy/emu.c`) calls `hw_reset()`, `lcd_reset()`,
+`cpu_reset()`, `mbc_reset()`, `sound_reset()` — full hardware power-up state.
+SRAM is not touched, so in-game saves survive the reset.
+
+The dirty-flag calls (`vram_dirty`, `pal_dirty`, `sound_dirty`, `mem_updatemap`)
+match the post-SRAM-load sequence already used at ROM start — they ensure the
+renderer picks up the freshly reset hardware state on the next frame.
+
+`pcm_init()` is called to zero the audio buffers for a clean audio start (it is
+idempotent and does not spawn a new audio task).
+
+`gbc_pixels` is cleared first so there is no single-frame flash of the old game state.
+
+### Files Changed
+- `main/main.c` — F3 soft reset handler
+- `README.md` — F3 added to button mapping, feature bullet, backlog entry marked done
+- `DEVLOG.md` — this entry

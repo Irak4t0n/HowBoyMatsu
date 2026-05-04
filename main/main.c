@@ -878,6 +878,18 @@ void doevents(void) {
                         lm_invalidate();
                     }
                     break;
+                case BSP_INPUT_NAVIGATION_KEY_F3:
+                    if (pressed && ss_state == SS_MENU_CLOSED && !layout_menu_open) {
+                        memset(gbc_pixels, 0, sizeof(gbc_pixels));
+                        emu_reset();
+                        vram_dirty();
+                        pal_dirty();
+                        sound_dirty();
+                        mem_updatemap();
+                        pcm_init();
+                        ESP_LOGI(TAG, "Soft reset");
+                    }
+                    break;
                 case BSP_INPUT_NAVIGATION_KEY_F4:
                     if (pressed && ss_state == SS_MENU_CLOSED && !layout_menu_open && state_save_dir[0]) {
                         for (int si = 0; si < 10; si++) {

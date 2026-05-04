@@ -19,6 +19,7 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 - **Clean launcher exit** — press F1 to save and return to the Tanmatsu launcher
 - **Return to ROM selector** — press Backspace during gameplay to save and return to the ROM selector without a hardware restart
 - **Button layout switcher** — press F2 to open a layout menu; choose Default (a/d) or WASD (w/a/s/d + ;/[)
+- **Soft reset** — press F3 to reset the current game back to its title screen (SRAM saves preserved)
 
 ## Button Mapping
 
@@ -34,6 +35,7 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 | ESC | Toggle FPS counter |
 | F1 | Save & return to launcher |
 | F2 | Button layout menu |
+| F3 | Soft reset (return to game title screen) |
 | F4 | Save State menu (10 slots) |
 | F6 | Fast Forward (OFF → 5× → 8× → OFF) |
 | Backspace | Return to ROM selector |
@@ -45,7 +47,7 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 | W / A / S / D | D-pad Up / Left / Down / Right |
 | ; key | Game Boy A |
 | [ key | Game Boy B |
-| Enter / Space / F1 / F4 / F6 | Same as Default |
+| Enter / Space / F1 / F3 / F4 / F6 | Same as Default |
 
 ## Save States
 Press **F4** to open the save state menu. The game continues running in the background.
@@ -91,7 +93,7 @@ Place `.gb` and `.gbc` ROM files in `/sdcard/roms/` on your SD card. Save files 
 | # | Feature | Notes |
 |---|---------|-------|
 | 1 | ~~**Button Config Swap**~~ | ✅ Done — F2 menu: Default / WASD |
-| 2 | **Return to Main Menu** | Return to the Tanmatsu main launcher menu |
+| 2 | ~~**Soft Reset**~~ | ✅ Done — F3 resets game to title screen (SRAM preserved) |
 | 3 | **Reverse Gameplay** | Circular frame buffer rewind — memory intensive |
 | 4 | **Internal Resolution Scaling** | Dynamic `SCALE` factor beyond 1:1 |
 | 5 | **Texture Filtering / Shaders** | Post-process pass on PAX framebuffer |
