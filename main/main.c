@@ -157,6 +157,14 @@ static char state_save_dir[320]   = {0};
 #define SS_MENU_COL_LO (SS_MENU_C0 - SS_MENU_BH + 1)   // 311
 #define SS_MENU_COL_HI (SS_MENU_C0 + 1)                // 461
 
+// Layout menu rect (top-left quadrant in landscape)
+#define LM_R0     50
+#define LM_RW    145
+#define LM_C0    350
+#define LM_BH    110
+#define LM_COL_LO (LM_C0 - LM_BH + 1)   // 241
+#define LM_COL_HI (LM_C0 + 1)            // 351
+
 static volatile int  ss_state      = SS_MENU_CLOSED;
 static volatile int  ss_slot       = 0;
 static volatile int  ss_cursor     = SS_SAVE;
@@ -171,6 +179,12 @@ static volatile int  ss_drawn_static = 0;
 static volatile int  ss_menu_drawn_a = 0;
 static volatile int  ss_menu_drawn_b = 0;
 static inline void ss_menu_invalidate(void) { ss_menu_drawn_a = 0; ss_menu_drawn_b = 0; }
+static volatile int  key_layout        = 0;  // 0=default, 1=WASD
+static volatile int  layout_menu_open  = 0;
+static volatile int  lm_cursor         = 0;
+static volatile int  lm_drawn_a        = 0;
+static volatile int  lm_drawn_b        = 0;
+static inline void lm_invalidate(void) { lm_drawn_a = 0; lm_drawn_b = 0; }
 static volatile int  ff_speed = 0; // 0=1x 1=2x 2=3x
 static volatile int  return_to_selector = 0;
 static volatile int  i2s_enabled = 1;
@@ -497,9 +511,9 @@ void draw_gbc_screen(void) {
         init_done = 1;
     }
 
-    // When the save-state menu is open, skip writing the menu rect so the
-    // pre-rendered menu pixels persist across frames (avoids per-frame redraw cost).
+    // When a menu is open, skip its rect so pre-rendered pixels persist across frames.
     int menu_open = (ss_state == SS_MENU_OPEN || ss_state == SS_MENU_SAVING || ss_state == SS_MENU_LOADING);
+    int lm_open   = layout_menu_open;
 
     for (int gx = 0; gx < GBC_W; gx++) {
         uint16_t *rp = scaled_row_565;
@@ -517,11 +531,15 @@ void draw_gbc_screen(void) {
             int row = row_start + rep;
             uint16_t *dst = phys + row * PHYS_W;
             if (menu_open && row >= SS_MENU_R0 && row < SS_MENU_R0 + SS_MENU_RW) {
-                // Two side-strips around the menu rect
                 if (SS_MENU_COL_LO > 0)
                     memcpy(dst, scaled_row_565, SS_MENU_COL_LO * 2);
                 if (SS_MENU_COL_HI < PHYS_W)
                     memcpy(dst + SS_MENU_COL_HI, scaled_row_565 + SS_MENU_COL_HI, (PHYS_W - SS_MENU_COL_HI) * 2);
+            } else if (lm_open && row >= LM_R0 && row < LM_R0 + LM_RW) {
+                if (LM_COL_LO > 0)
+                    memcpy(dst, scaled_row_565, LM_COL_LO * 2);
+                if (LM_COL_HI < PHYS_W)
+                    memcpy(dst + LM_COL_HI, scaled_row_565 + LM_COL_HI, (PHYS_W - LM_COL_HI) * 2);
             } else {
                 memcpy(dst, scaled_row_565, PHYS_W * 2);
             }
@@ -700,8 +718,10 @@ void sys_initpath(char *exe)          { (void)exe; }
 static int gbc_keys[8] = {0};
 void doevents(void) {
     bsp_input_event_t event;
-    static uint32_t key_release_time[4] = {0, 0, 0, 0};
-    static byte key_pads[4] = {PAD_A, PAD_B, PAD_START, PAD_SELECT};
+    // Indices 0-3: A, B, Start, Select (both layouts)
+    // Indices 4-7: Up, Down, Left, Right (WASD layout keyboard d-pad)
+    static uint32_t key_release_time[8] = {0};
+    static byte key_pads[8] = {PAD_A, PAD_B, PAD_START, PAD_SELECT, PAD_UP, PAD_DOWN, PAD_LEFT, PAD_RIGHT};
 
     // Auto-release keys after 100ms
     uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
@@ -710,6 +730,17 @@ void doevents(void) {
             pad_set(key_pads[i], 0);
             key_release_time[i] = 0;
         }
+    }
+
+    // WASD layout: poll scancode state each frame for accurate hold/release
+    if (key_layout == 1 && !layout_menu_open) {
+        bool st;
+        bsp_input_read_scancode(BSP_INPUT_SCANCODE_W,         &st); pad_set(PAD_UP,    (int)st);
+        bsp_input_read_scancode(BSP_INPUT_SCANCODE_S,         &st); pad_set(PAD_DOWN,  (int)st);
+        bsp_input_read_scancode(BSP_INPUT_SCANCODE_A,         &st); pad_set(PAD_LEFT,  (int)st);
+        bsp_input_read_scancode(BSP_INPUT_SCANCODE_D,         &st); pad_set(PAD_RIGHT, (int)st);
+        bsp_input_read_scancode(BSP_INPUT_SCANCODE_SEMICOLON, &st); pad_set(PAD_A,     (int)st);
+        bsp_input_read_scancode(BSP_INPUT_SCANCODE_LEFTBRACE, &st); pad_set(PAD_B,     (int)st);
     }
 
     while (xQueueReceive(input_event_queue, &event, 0) == pdTRUE) {
@@ -763,11 +794,34 @@ void doevents(void) {
                 continue; // swallow all input while menu open
             }
 
+            // Layout menu input routing
+            if (layout_menu_open && pressed) {
+                switch (event.args_navigation.key) {
+                    case BSP_INPUT_NAVIGATION_KEY_UP:
+                        lm_cursor = 0; lm_invalidate(); break;
+                    case BSP_INPUT_NAVIGATION_KEY_DOWN:
+                        lm_cursor = 1; lm_invalidate(); break;
+                    case BSP_INPUT_NAVIGATION_KEY_RETURN:
+                        key_layout = lm_cursor;
+                        layout_menu_open = 0;
+                        lm_invalidate();
+                        pad_set(PAD_UP, 0); pad_set(PAD_DOWN, 0);
+                        pad_set(PAD_LEFT, 0); pad_set(PAD_RIGHT, 0);
+                        key_release_time[4] = key_release_time[5] = key_release_time[6] = key_release_time[7] = 0;
+                        ESP_LOGI(TAG, "Layout: %s", key_layout ? "WASD" : "Default");
+                        break;
+                    case BSP_INPUT_NAVIGATION_KEY_F2:
+                        layout_menu_open = 0; lm_invalidate(); break;
+                    default: break;
+                }
+                continue;
+            }
+
             switch (event.args_navigation.key) {
-                case BSP_INPUT_NAVIGATION_KEY_UP:    pad_set(PAD_UP,    pressed); break;
-                case BSP_INPUT_NAVIGATION_KEY_DOWN:  pad_set(PAD_DOWN,  pressed); break;
-                case BSP_INPUT_NAVIGATION_KEY_LEFT:  pad_set(PAD_LEFT,  pressed); break;
-                case BSP_INPUT_NAVIGATION_KEY_RIGHT: pad_set(PAD_RIGHT, pressed); break;
+                case BSP_INPUT_NAVIGATION_KEY_UP:    if (key_layout == 0) pad_set(PAD_UP,    pressed); break;
+                case BSP_INPUT_NAVIGATION_KEY_DOWN:  if (key_layout == 0) pad_set(PAD_DOWN,  pressed); break;
+                case BSP_INPUT_NAVIGATION_KEY_LEFT:  if (key_layout == 0) pad_set(PAD_LEFT,  pressed); break;
+                case BSP_INPUT_NAVIGATION_KEY_RIGHT: if (key_layout == 0) pad_set(PAD_RIGHT, pressed); break;
                 case BSP_INPUT_NAVIGATION_KEY_RETURN: pad_set(PAD_START,  pressed); break;
                 case BSP_INPUT_NAVIGATION_KEY_ESC:
                     if (pressed) {
@@ -809,8 +863,15 @@ void doevents(void) {
 
                     }
                     break;
+                case BSP_INPUT_NAVIGATION_KEY_F2:
+                    if (pressed && ss_state == SS_MENU_CLOSED) {
+                        lm_cursor = key_layout;
+                        layout_menu_open = 1;
+                        lm_invalidate();
+                    }
+                    break;
                 case BSP_INPUT_NAVIGATION_KEY_F4:
-                    if (pressed && ss_state == SS_MENU_CLOSED && state_save_dir[0]) {
+                    if (pressed && ss_state == SS_MENU_CLOSED && !layout_menu_open && state_save_dir[0]) {
                         for (int si = 0; si < 10; si++) {
                             char spath[340];
                             snprintf(spath, sizeof(spath), "%s.ss%d", state_save_dir, si);
@@ -853,33 +914,75 @@ void doevents(void) {
                 default: break;
             }
         } else if (event.type == INPUT_EVENT_TYPE_KEYBOARD) {
+            // Layout menu: 'a' confirms selection, all other keys swallowed
+            if (layout_menu_open) {
+                if (event.args_keyboard.ascii == 'a' || event.args_keyboard.ascii == 'A') {
+                    key_layout = lm_cursor;
+                    layout_menu_open = 0;
+                    lm_invalidate();
+                    pad_set(PAD_UP, 0); pad_set(PAD_DOWN, 0);
+                    pad_set(PAD_LEFT, 0); pad_set(PAD_RIGHT, 0);
+                    for (int ki = 4; ki < 8; ki++) key_release_time[ki] = 0;
+                    ESP_LOGI(TAG, "Layout: %s", key_layout ? "WASD" : "Default");
+                }
+                continue;
+            }
             uint32_t release_at = now + 100;
-            switch (event.args_keyboard.ascii) {
-                case 'a': case 'A':
-                    pad_set(PAD_A, 1); key_release_time[0] = release_at; break;
-                case 'd': case 'D':
-                    pad_set(PAD_B, 1); key_release_time[1] = release_at; break;
-                case '\n': case '\r':
-                    pad_set(PAD_START, 1); key_release_time[2] = release_at; break;
-                case ' ':
-                    pad_set(PAD_SELECT, 1); key_release_time[3] = release_at; break;
-                case '\b': case 127: // backspace — return to ROM selector
-                    if (sram_path_global[0]) {
-                        FILE *sf = fopen(sram_path_global, "wb");
-                        if (sf) { sram_save(sf); fclose(sf); ESP_LOGI(TAG, "SRAM saved on ROM selector return"); }
-                        char rtc_path_bs[320];
-                        strncpy(rtc_path_bs, sram_path_global, sizeof(rtc_path_bs)-1);
-                        char *rdot_bs = strrchr(rtc_path_bs, '.');
-                        if (rdot_bs) strcpy(rdot_bs, ".rtc");
-                        FILE *rf_bs = fopen(rtc_path_bs, "wb");
-                        if (rf_bs) { rtc_save(rf_bs); }
-                    }
-                    bsp_audio_set_amplifier(false);
-                    bsp_audio_set_volume(0);
-                    audio_mute = 1;
-                    return_to_selector = 1;
-                    break;
-                default: break;
+            if (key_layout == 0) {
+                // Default layout: a=GBC-A, d=GBC-B
+                switch (event.args_keyboard.ascii) {
+                    case 'a': case 'A':
+                        pad_set(PAD_A, 1); key_release_time[0] = release_at; break;
+                    case 'd': case 'D':
+                        pad_set(PAD_B, 1); key_release_time[1] = release_at; break;
+                    case '\n': case '\r':
+                        pad_set(PAD_START, 1); key_release_time[2] = release_at; break;
+                    case ' ':
+                        pad_set(PAD_SELECT, 1); key_release_time[3] = release_at; break;
+                    case '\b': case 127:
+                        if (sram_path_global[0]) {
+                            FILE *sf = fopen(sram_path_global, "wb");
+                            if (sf) { sram_save(sf); fclose(sf); ESP_LOGI(TAG, "SRAM saved on ROM selector return"); }
+                            char rtc_path_bs[320];
+                            strncpy(rtc_path_bs, sram_path_global, sizeof(rtc_path_bs)-1);
+                            char *rdot_bs = strrchr(rtc_path_bs, '.');
+                            if (rdot_bs) strcpy(rdot_bs, ".rtc");
+                            FILE *rf_bs = fopen(rtc_path_bs, "wb");
+                            if (rf_bs) { rtc_save(rf_bs); }
+                        }
+                        bsp_audio_set_amplifier(false);
+                        bsp_audio_set_volume(0);
+                        audio_mute = 1;
+                        return_to_selector = 1;
+                        break;
+                    default: break;
+                }
+            } else {
+                // WASD layout: w/a/s/d=d-pad, ;=GBC-A, [=GBC-B
+                switch (event.args_keyboard.ascii) {
+                    // w/a/s/d, ;, [ handled by scancode polling above
+                    case '\n': case '\r':
+                        pad_set(PAD_START,  1); key_release_time[2] = release_at; break;
+                    case ' ':
+                        pad_set(PAD_SELECT, 1); key_release_time[3] = release_at; break;
+                    case '\b': case 127:
+                        if (sram_path_global[0]) {
+                            FILE *sf = fopen(sram_path_global, "wb");
+                            if (sf) { sram_save(sf); fclose(sf); ESP_LOGI(TAG, "SRAM saved on ROM selector return"); }
+                            char rtc_path_bs[320];
+                            strncpy(rtc_path_bs, sram_path_global, sizeof(rtc_path_bs)-1);
+                            char *rdot_bs = strrchr(rtc_path_bs, '.');
+                            if (rdot_bs) strcpy(rdot_bs, ".rtc");
+                            FILE *rf_bs = fopen(rtc_path_bs, "wb");
+                            if (rf_bs) { rtc_save(rf_bs); }
+                        }
+                        bsp_audio_set_amplifier(false);
+                        bsp_audio_set_volume(0);
+                        audio_mute = 1;
+                        return_to_selector = 1;
+                        break;
+                    default: break;
+                }
             }
         }
     }
@@ -992,6 +1095,27 @@ static void ss_text(uint16_t *p, const char *s, int row, int col, int sc, uint16
             }
         }
         row += 6*sc;
+    }
+}
+
+static void draw_layout_menu(uint8_t *buf) {
+    uint16_t *p = (uint16_t *)buf;
+    const int SC = 2, CW = 6*SC, CH = 8*SC;
+    const int R0=LM_R0, RW=LM_RW, C0=LM_C0, BH=LM_BH;
+
+    ss_rect(p, R0, C0, RW, BH, 0x1083);
+    ss_hline(p, R0,       C0,       RW, 0x07E0);
+    ss_hline(p, R0,       C0-BH+1,  RW, 0x07E0);
+    ss_vline(p, R0,       C0,       BH, 0x07E0);
+    ss_vline(p, R0+RW-1,  C0,       BH, 0x07E0);
+    ss_text(p, "LAYOUT", R0+8, C0-8, SC, 0xFFFF);
+
+    const char *labels[] = {"Default", "WASD"};
+    for (int i = 0; i < 2; i++) {
+        int ic = C0 - 8 - (CH+8)*(i+1);
+        if (lm_cursor == i) ss_text(p, ">", R0+8, ic, SC, 0x07E0);
+        uint16_t tcol = (key_layout == i) ? 0x07E0 : 0xFFFF;
+        ss_text(p, labels[i], R0+8+CW*2, ic, SC, tcol);
     }
 }
 
@@ -1153,6 +1277,18 @@ void blit_task(void *arg) {
         } else {
             ss_menu_drawn_a = 0;
             ss_menu_drawn_b = 0;
+        }
+        // Layout menu overlay (same persistent-render pattern as save state menu)
+        if (layout_menu_open) {
+            int lm_dirty = (active_render_buf == 0) ? !lm_drawn_a : !lm_drawn_b;
+            if (lm_dirty) {
+                draw_layout_menu(buf);
+                if (active_render_buf == 0) lm_drawn_a = 1;
+                else                        lm_drawn_b = 1;
+            }
+        } else {
+            lm_drawn_a = 0;
+            lm_drawn_b = 0;
         }
         bsp_display_blit(0, 0, PHYS_W, PHYS_H, buf);
         xSemaphoreGive(sem_frame_done);

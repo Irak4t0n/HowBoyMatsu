@@ -113,6 +113,8 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 ---
 
 ## Button Mapping
+
+### Default Layout (Layout 0)
 | Key | Action |
 |-----|--------|
 | D-pad | GBC D-pad |
@@ -122,6 +124,23 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 | Space | Select |
 | ESC | Toggle FPS |
 | F1 | Save & exit to launcher |
+| F2 | Button layout menu |
+| F4 | Save state menu |
+| F6 | Fast forward (OFF/5×/8×) |
+| Backspace | Return to ROM selector |
+
+### WASD Layout (Layout 1)
+| Key | Action |
+|-----|--------|
+| D-pad | GBC D-pad |
+| W/A/S/D | GBC D-pad (WASD) |
+| ; | GBC A |
+| [ | GBC B |
+| Enter | Start |
+| Space | Select |
+| ESC | Toggle FPS |
+| F1 | Save & exit to launcher |
+| F2 | Button layout menu |
 | F4 | Save state menu |
 | F6 | Fast forward (OFF/5×/8×) |
 | Backspace | Return to ROM selector |
@@ -129,7 +148,7 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 ---
 
 ## Planned Features
-1. Button Config Swap
+1. ~~Button Config Swap~~ — DONE (F2 menu, Default / WASD)
 2. Return to Main Menu (F1 already exits to launcher)
 3. Reverse Gameplay (rewind)
 4. Internal Resolution Scaling
@@ -310,11 +329,53 @@ it's strictly better and the architectural fix made the per-frame cost moot.
 
 ### Planned Features (status)
 - [x] Save State Menu Visibility — FIXED (dark panel + persistent-render)
+- [x] Button Layout Switcher — FIXED (F2 menu, Default / WASD)
 - [ ] Reverse Gameplay (Rewind)
 - [ ] Internal Resolution Scaling
 - [ ] Texture Filtering / Shaders
 - [ ] Overclocking
 - [ ] Netplay
 - [ ] Input Mapping Profiles
-- [ ] Button Layout Switcher (carried over from Apr 27 session)
 - [ ] Investigate residual audio distortion when save state menu is open
+
+---
+
+## Session May 3 2026 (continued)
+
+### Button Layout Switcher (F2)
+
+**Goal:** Add an on-the-fly button layout switcher so the user can switch between Default
+and WASD key mappings without restarting.
+
+**Design:**
+- **F2** opens a small layout menu (top-left area of the game screen)
+- Up/Down arrow or Enter/A to select; F2 or Enter to confirm
+- Active layout shown in green, cursor shown with `>`
+- Two layouts:
+
+| Layout | D-pad | A button | B button |
+|--------|-------|----------|----------|
+| Default | Navigation keys | a/A key | d/D key |
+| WASD | w/a/s/d keys (+ nav keys still work) | ; key | [ key |
+
+**Architecture:**
+
+Same persistent-render pattern as the save state menu:
+- `layout_menu_open` flag signals `vid_end` to skip the menu rect rows (preserves pixels across frames)
+- `lm_drawn_a` / `lm_drawn_b` per-buffer dirty flags: `blit_task` only calls `draw_layout_menu` when the buffer is stale
+- `lm_invalidate()` called on open, cursor move, and confirm
+
+**Key expansion:**
+
+`key_release_time[]` and `key_pads[]` expanded from 4 → 8 entries:
+- Indices 0–3: A, B, Start, Select (both layouts)
+- Indices 4–7: Up, Down, Left, Right (WASD d-pad, released when switching back to Default)
+
+When switching layouts (Enter confirms), all WASD-mapped d-pad inputs are force-released
+(`pad_set(PAD_UP/DOWN/LEFT/RIGHT, 0)` + `key_release_time[4..7] = 0`) to prevent stuck inputs.
+
+**Menu position:** R0=50, RW=145, C0=350, BH=110 (physical coords) — top-left quadrant in
+landscape, doesn't overlap save state menu (rows 560–779).
+
+### Files Changed
+- `main/main.c` — all of the above

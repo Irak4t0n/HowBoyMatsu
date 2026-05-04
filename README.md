@@ -1,7 +1,7 @@
 # HowBoyMatsu
 A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the GnuBoy project.
 
-*Last updated: April 26, 2026*
+*Last updated: May 3, 2026*
 
 ---
 
@@ -18,8 +18,11 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 - **FPS counter** — toggle with ESC key, displayed top-right in green
 - **Clean launcher exit** — press F1 to save and return to the Tanmatsu launcher
 - **Return to ROM selector** — press Backspace during gameplay to save and return to the ROM selector without a hardware restart
+- **Button layout switcher** — press F2 to open a layout menu; choose Default (a/d) or WASD (w/a/s/d + ;/[)
 
 ## Button Mapping
+
+### Default Layout
 | Tanmatsu | Action |
 |----------|--------|
 | D-pad | D-pad |
@@ -30,9 +33,19 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 | Volume Up/Down | Volume |
 | ESC | Toggle FPS counter |
 | F1 | Save & return to launcher |
+| F2 | Button layout menu |
 | F4 | Save State menu (10 slots) |
 | F6 | Fast Forward (OFF → 5× → 8× → OFF) |
 | Backspace | Return to ROM selector |
+
+### WASD Layout (press F2 to switch)
+| Tanmatsu | Action |
+|----------|--------|
+| D-pad | D-pad (still active) |
+| W / A / S / D | D-pad Up / Left / Down / Right |
+| ; key | Game Boy A |
+| [ key | Game Boy B |
+| Enter / Space / F1 / F4 / F6 | Same as Default |
 
 ## Save States
 Press **F4** to open the save state menu. The game continues running in the background.
@@ -77,7 +90,7 @@ Place `.gb` and `.gbc` ROM files in `/sdcard/roms/` on your SD card. Save files 
 ### 🗓️ Backlog
 | # | Feature | Notes |
 |---|---------|-------|
-| 1 | **Button Config Swap** | Swap button layouts on the fly |
+| 1 | ~~**Button Config Swap**~~ | ✅ Done — F2 menu: Default / WASD |
 | 2 | **Return to Main Menu** | Return to the Tanmatsu main launcher menu |
 | 3 | **Reverse Gameplay** | Circular frame buffer rewind — memory intensive |
 | 4 | **Internal Resolution Scaling** | Dynamic `SCALE` factor beyond 1:1 |
