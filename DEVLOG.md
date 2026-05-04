@@ -379,3 +379,41 @@ landscape, doesn't overlap save state menu (rows 560–779).
 
 ### Files Changed
 - `main/main.c` — all of the above
+
+---
+
+## Session May 3 2026 (continued — ROM reload flash fix)
+
+### Fix: Old ROM Audio/Video Flash on ROM Reload
+
+**Problem:** After pressing Backspace to return to the ROM selector and launching a
+different ROM, there was a brief window where the old ROM's last audio frame played
+and its last video frame was visible before the new ROM started.
+
+**Root causes identified:**
+
+1. **`pcm_init()` spawned a duplicate `audio_task` on every ROM load** — the function
+   had no idempotency guard, so each call to `emu_run()` created a new audio task
+   while the old one kept running. Two audio tasks writing to I2S simultaneously caused
+   the audio glitch.
+
+2. **`pcm_init()` also leaked memory on every reload** — three `malloc()` calls for
+   `pcm.buf`, `audio_buf_a`, `audio_buf_b` and two `xSemaphoreCreateBinary()` calls
+   with no corresponding `free` / `vSemaphoreDelete`. Globals were silently overwritten.
+
+3. **`gbc_pixels` never cleared between ROMs** — the static pixel buffer retains the
+   previous ROM's last rendered scanline until the new ROM overwrites it. On fast ROM
+   loads, `vid_end` could blit stale pixels before the first emulated frame filled the buffer.
+
+**Fix:**
+
+`pcm_init()` made idempotent with a `static int inited` guard:
+- First call: allocates buffers, creates semaphores, spawns `audio_task` — same as before
+- Subsequent calls: zero all three audio buffers, reset `pcm.pos`, return immediately
+  (audio task keeps running uninterrupted across ROM reloads)
+
+`memset(gbc_pixels, 0, sizeof(gbc_pixels))` added just before `emu_run()` in
+`emulator_task` — guarantees first blitted frame is black rather than stale VRAM.
+
+### Files Changed
+- `main/main.c` — `pcm_init()` idempotency guard, `gbc_pixels` clear before `emu_run()`
