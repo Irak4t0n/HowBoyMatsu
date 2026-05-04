@@ -650,9 +650,17 @@ void vid_settitle(char *title) {
 
 // --- gnuboy audio callbacks (stub for now) ---
 void pcm_init(void) {
-    // Keep I2S at 44100Hz to match ES8156 DAC configuration
-    bsp_audio_set_volume(gbc_volume);
-    bsp_audio_set_amplifier(true);
+    static int inited = 0;
+    if (inited) {
+        // Reset audio buffers for new ROM — audio task keeps running
+        if (pcm.buf)     memset(pcm.buf,     0, pcm.len * sizeof(int16_t));
+        if (audio_buf_a) memset(audio_buf_a, 0, pcm.len * sizeof(int16_t));
+        if (audio_buf_b) memset(audio_buf_b, 0, pcm.len * sizeof(int16_t));
+        pcm.pos = 0;
+        ESP_LOGI(TAG, "Audio reset for new ROM");
+        return;
+    }
+    inited = 1;
 
     pcm.hz     = 44100;
     pcm.stereo = 1;
@@ -1499,6 +1507,7 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     }
     bsp_audio_set_volume(gbc_volume);
     bsp_audio_set_amplifier(true);
+    memset(gbc_pixels, 0, sizeof(gbc_pixels));
     emu_run();
 
     vTaskDelete(NULL);
