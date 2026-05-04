@@ -465,3 +465,33 @@ idempotent and does not spawn a new audio task).
 - `main/main.c` — F3 soft reset handler
 - `README.md` — F3 added to button mapping, feature bullet, backlog entry marked done
 - `DEVLOG.md` — this entry
+
+---
+
+## Session May 4 2026 — Fast Forward audio mute fix
+
+### Fix: FF audio distortion on repeated use
+
+**Problem:** First FF cycle muted audio correctly. On subsequent cycles, audio played
+through distorted instead of muting.
+
+**Root cause:** `ff_silence_sent` (a counter used to flush the I2S DMA with 8 silence
+frames on FF start) was never reset between cycles. On the second FF activation it was
+already at 8, so the flush was skipped and the DMA replayed its last stale audio buffer.
+
+**Fix (attempt 1 — reset counter):** Reset `ff_silence_sent = 0` in both F6 handlers
+whenever `ff_speed > 0`. Confirmed working for mute.
+
+**Attempted improvement — play audio at normal speed during FF:**
+Replaced silence-flush with a stride approach: submit 1 out of every N audio frames
+(N=5 at 5x, N=8 at 8x) so the audio task receives exactly 60 buffers/second regardless
+of FF speed. Sounded bad in practice — the emulator produces frames in bursts between
+blits, causing uneven buffer delivery and audible gaps/stutters.
+
+**Final fix — non-blocking silence feed:** During FF, `pcm_submit()` attempts
+`xSemaphoreTake(sem_audio_done, 0)` (zero timeout, non-blocking). If the audio task
+is ready, write a silence buffer and give `sem_audio_ready`. If not, discard and move on.
+Result: clean mute with no emulator slowdown, no DMA replay, works on every FF cycle.
+
+### Files Changed
+- `main/main.c` — `pcm_submit()` FF block rewritten; `ff_silence_sent` → non-blocking silence feed

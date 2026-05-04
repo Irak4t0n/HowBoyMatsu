@@ -191,7 +191,6 @@ static volatile int  i2s_enabled = 1;
 static volatile int  audio_mute = 0;
 static SemaphoreHandle_t sem_audio_shutdown = NULL;
 static volatile int  ff_flush = 0;
-static volatile int  ff_silence_sent = 0;
 static volatile int  ss_clear_region  = 0; // counts down 2 frames to clear both bufs
 static float gbc_volume = 100.0f;
 static bool show_fps = false;
@@ -681,11 +680,9 @@ int pcm_submit(void) {
     if (audio_mute) { pcm.pos = 0; return 1; }
     if (!pcm.buf || pcm.pos == 0) { pcm.pos = 0; return 1; }
     if (!sem_audio_ready || !sem_audio_done) { pcm.pos = 0; return 1; }
-    // Fast forward: flush I2S DMA (6 buffers) with silence, then discard
+    // Fast forward: feed silence non-blocking so I2S DMA stays quiet
     if (ff_speed > 0) {
-        if (ff_silence_sent < 8) {
-            ff_silence_sent++;
-            xSemaphoreTake(sem_audio_done, pdMS_TO_TICKS(50));
+        if (xSemaphoreTake(sem_audio_done, 0) == pdTRUE) {
             int16_t *ready = (audio_buf_ready == 0) ? audio_buf_a : audio_buf_b;
             memset(ready, 0, pcm.len * sizeof(int16_t));
             audio_buf_len = pcm.len;
@@ -790,8 +787,6 @@ void doevents(void) {
                         ff_speed = (ff_speed + 1) % 3;
                         const char *ff_labels[] = {"OFF", "5x", "8x"};
                         ESP_LOGI(TAG, "Fast forward: %s", ff_labels[ff_speed]);
-
-
                     }
                     break;
                 case BSP_INPUT_NAVIGATION_KEY_F4:
@@ -867,8 +862,6 @@ void doevents(void) {
                         ff_speed = (ff_speed + 1) % 3;
                         const char *ff_labels[] = {"OFF", "5x", "8x"};
                         ESP_LOGI(TAG, "Fast forward: %s", ff_labels[ff_speed]);
-
-
                     }
                     break;
                 case BSP_INPUT_NAVIGATION_KEY_F2:
@@ -1381,7 +1374,6 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     } else if (rom_count > 1) {
         return_to_selector = 0;
         ff_speed = 0;
-        ff_silence_sent = 0;
         if (blit_task_handle) vTaskResume(blit_task_handle);
         rom_path = rom_selector();
     }
@@ -1632,7 +1624,6 @@ vTaskDelay(pdMS_TO_TICKS(500));
         sem_emulator_done = xSemaphoreCreateBinary();
         return_to_selector = 0;
         ff_speed = 0;
-        ff_silence_sent = 0;
         if (blit_task_handle) vTaskResume(blit_task_handle);
         xTaskCreatePinnedToCore(emulator_task, "emulator", 32768, NULL, 5, &emulator_task_handle, 1);
         xSemaphoreTake(sem_emulator_done, portMAX_DELAY);
