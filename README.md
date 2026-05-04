@@ -99,7 +99,6 @@ Place `.gb` and `.gbc` ROM files in `/sdcard/roms/` on your SD card. Save files 
 | 5 | **Texture Filtering / Shaders** | Post-process pass on PAX framebuffer |
 | 6 | **Overclocking** | ESP32-P4 CPU freq tuning via `esp_pm` |
 | 7 | **Netplay** | WiFi link cable emulation |
-| 8 | **Input Mapping Profiles** | Multiple button layout presets stored in NVS |
 
 ---
 

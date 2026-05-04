@@ -165,6 +165,7 @@ static char state_save_dir[320]   = {0};
 #define LM_COL_LO (LM_C0 - LM_BH + 1)   // 241
 #define LM_COL_HI (LM_C0 + 1)            // 351
 
+
 static volatile int  ss_state      = SS_MENU_CLOSED;
 static volatile int  ss_slot       = 0;
 static volatile int  ss_cursor     = SS_SAVE;
@@ -190,16 +191,15 @@ static volatile int  return_to_selector = 0;
 static volatile int  i2s_enabled = 1;
 static volatile int  audio_mute = 0;
 static SemaphoreHandle_t sem_audio_shutdown = NULL;
-static volatile int  ff_flush = 0;
 static volatile int  ss_clear_region  = 0; // counts down 2 frames to clear both bufs
 static float gbc_volume = 100.0f;
 static bool show_fps = false;
-static int16_t *audio_buf_a = NULL;
-static int16_t *audio_buf_b = NULL;
+static int16_t *audio_buf_a   = NULL;
+static int16_t *audio_buf_b   = NULL;
 static volatile int audio_buf_ready = 0;
-static volatile int audio_buf_len = 0;
+static volatile int audio_buf_len   = 0;
 static SemaphoreHandle_t sem_audio_ready = NULL;
-static SemaphoreHandle_t sem_audio_done = NULL;
+static SemaphoreHandle_t sem_audio_done  = NULL;
 static float current_fps = 0.0f;
 #define ROMS_DIR "/sdcard/roms"
 #define MAX_ROMS 64
@@ -651,7 +651,6 @@ void vid_settitle(char *title) {
 void pcm_init(void) {
     static int inited = 0;
     if (inited) {
-        // Reset audio buffers for new ROM — audio task keeps running
         if (pcm.buf)     memset(pcm.buf,     0, pcm.len * sizeof(int16_t));
         if (audio_buf_a) memset(audio_buf_a, 0, pcm.len * sizeof(int16_t));
         if (audio_buf_b) memset(audio_buf_b, 0, pcm.len * sizeof(int16_t));
@@ -692,9 +691,7 @@ int pcm_submit(void) {
         pcm.pos = 0;
         return 1;
     }
-    // Wait for audio task to finish previous buffer
     xSemaphoreTake(sem_audio_done, pdMS_TO_TICKS(30));
-    // Copy to ready buffer and signal
     int16_t *ready = (audio_buf_ready == 0) ? audio_buf_a : audio_buf_b;
     memcpy(ready, pcm.buf, pcm.pos * sizeof(int16_t));
     audio_buf_len = pcm.pos;
@@ -1524,13 +1521,6 @@ void audio_task(void *arg) {
     static int16_t silence[4096] = {0};
     size_t written = 0;
     while (1) {
-        if (ff_flush > 0) {
-            if (i2s) i2s_channel_write(i2s, silence, pcm.len * sizeof(int16_t), &written, pdMS_TO_TICKS(100));
-            ff_flush--;
-            xSemaphoreGive(sem_audio_done);
-            continue;
-        }
-        // Wait for a buffer to be ready
         xSemaphoreTake(sem_audio_ready, portMAX_DELAY);
         if (audio_mute) {
             if (i2s && i2s_enabled)
