@@ -228,7 +228,7 @@ void loadstate(FILE *f)
 	__asm__("nop");
 	__asm__("nop");
 
-	printf("loadstate: read sram addr=%p, size=0x%x, count=%d\n", (void*)ram.sbank, 4096 * srl, count);
+	// printf("loadstate: read sram addr=%p, size=0x%x, count=%d\n", (void*)ram.sbank, 4096 * srl, count);
 
 	//byte* ptr = (byte*)(0x3f800000 + 0x300000 + (0xbe7a & 0x1fff));
 	//printf("loadstate: watch = 0x%x, 0x%x, 0x%x, 0x%x\n", *ptr, *(ptr+1), *(ptr+2), *(ptr+3));
@@ -313,7 +313,7 @@ void savestate(FILE *f)
 		__asm__("nop");
 		__asm__("nop");
 
-		printf("savesate: wrote sram addr=%p, size=0x%x, count=%d\n", (void*)tmp, 4096, count);
+		// printf("savesate: wrote sram addr=%p, size=0x%x, count=%d\n", (void*)tmp, 4096, count);
 		tmp += 4096;
 	}
 

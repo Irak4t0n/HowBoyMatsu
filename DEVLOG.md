@@ -58,7 +58,15 @@ while (1) {
 - Audio muted during FF via `i2s_channel_disable()` on FF start, re-enabled on FF end
 - `ff_silence_sent` counter prevents audio task from submitting during FF
 
-### 3. ROM Selector ✅
+### 3. Rewind (Time Rewind) ✅
+- **F5** starts rewind; **F5 again** resumes from rewound point
+- 20-slot circular snapshot buffer in PSRAM: `rewind_state_buf` (20 × 96 KB) + `rewind_pix_buf` (20 × 90 KB)
+- Snapshots taken every 10 frames via `fmemopen`/`savestate`; played back every 3 frames via `loadstate`
+- **SRAM protected:** a copy of `ram.sbank` is saved to `rewind_sram_backup` before rewind starts; restored on exit — in-game saves are never corrupted
+- All 8 GBC buttons force-released on rewind exit to prevent phantom movement
+- Audio muted during rewind; buffer trimmed to resume point on exit
+
+### 4. ROM Selector ✅
 Full 800×480 landscape layout with direct pixel rendering (bypasses PAX rotation):
 - `rom_fill_row_direct()` — memset rows directly into physical pixel buffer (~12ms for all rows)
 - `rom_draw_text_direct()` — embedded 5×7 bitmap font, direct pixel write (~2ms for all text)
@@ -126,6 +134,7 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 | F1 | Save & exit to launcher |
 | F2 | Button layout menu |
 | F4 | Save state menu |
+| F5 | Rewind (hold; F5 again to resume) |
 | F6 | Fast forward (OFF/5×/8×) |
 | Backspace | Return to ROM selector |
 
@@ -142,6 +151,7 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 | F1 | Save & exit to launcher |
 | F2 | Button layout menu |
 | F4 | Save state menu |
+| F5 | Rewind (F5 again to resume) |
 | F6 | Fast forward (OFF/5×/8×) |
 | Backspace | Return to ROM selector |
 
@@ -150,7 +160,7 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 ## Planned Features
 1. ~~Button Config Swap~~ — DONE (F2 menu, Default / WASD)
 2. Return to Main Menu (F1 already exits to launcher)
-3. Reverse Gameplay (rewind)
+3. ~~Reverse Gameplay (rewind)~~ — DONE (F5, SRAM-safe)
 4. Internal Resolution Scaling
 5. Texture Filtering/Shaders
 6. Overclocking
@@ -495,3 +505,42 @@ Result: clean mute with no emulator slowdown, no DMA replay, works on every FF c
 
 ### Files Changed
 - `main/main.c` — `pcm_submit()` FF block rewritten; `ff_silence_sent` → non-blocking silence feed
+
+---
+
+## Session May 5 2026 — Rewind Gameplay (F5) ✅
+
+### Feature: Rewind Gameplay (F5)
+
+**Goal:** Press F5 to rewind gameplay in real time; press F5 again to resume from the rewound point. In-game saves (SRAM) must not be corrupted.
+
+### Design
+
+**Circular snapshot buffer (PSRAM):**
+- `rewind_state_buf`: 20 × 96 KB = 1.92 MB of gnuboy savestates
+- `rewind_pix_buf`: 20 × 160×144 × 2B = ~900 KB of pixel snapshots
+- `rewind_sram_backup`: 128 KB — copy of `ram.sbank` taken at rewind entry
+
+**Snapshot cadence:** `rewind_push()` called every 10 frames during 1× normal play (not during FF). Each call writes `savestate()` + pixel data to the next circular slot.
+
+**Playback cadence:** Every 3 frames, `rewind_pop()` loads the previous snapshot via `loadstate()` + `vram_dirty/pal_dirty/sound_dirty/mem_updatemap`. Between pops, `rw_hold_pixels` is re-blitted to hold the frame steady.
+
+**SRAM protection (key fix):** gnuboy's `savestate()`/`loadstate()` include `ram.sbank` (battery-backed SRAM, i.e. in-game saves). Without protection, rewinding past an in-game save would roll that save back in memory, and the next autosave would corrupt the `.sav` file.
+
+Fix: on F5 entry, `memcpy(rewind_sram_backup, ram.sbank, mbc.ramsize * 8192)`. On both F5-exit and auto-exhaust, restore it back and set `ram.sram_dirty = 1`. The player's saves are fully preserved regardless of how far they rewind.
+
+**Both exit paths (F5 and buffer-exhausted auto-exit):**
+1. Trim `rw_head`/`rw_count` to the resume point
+2. Release all 8 GBC buttons (`pad_set` to 0) to prevent phantom movement
+3. Restore `ram.sbank` from backup, set `sram_dirty`
+4. Unmute audio
+
+**Key implementation details:**
+- `rw_frame_ctr` is file-scope (not static-local) and reset to 0 on every rewind entry — ensures clean 3-frame cadence on 2nd+ uses
+- Snapshots not taken during fast-forward (`ff_speed == 0 && !rewind_active` guard)
+- `sdkconfig` entries for `CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC` retained (needed for launcher-exit function)
+
+### Files Changed
+- `main/main.c` — rewind feature (globals, `rewind_push`, `rewind_pop`, `rewind_release_all_keys`, F5 handler, `vid_end` rewind block + snapshot push, PSRAM allocation)
+- `DEVLOG.md` — this entry; Features, Button Mapping, Planned Features updated
+- `README.md` — F5 added to button mapping and features list; backlog entry marked done

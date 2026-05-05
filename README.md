@@ -1,7 +1,7 @@
 # HowBoyMatsu
 A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the GnuBoy project.
 
-*Last updated: May 3, 2026*
+*Last updated: May 5, 2026*
 
 ---
 
@@ -14,6 +14,7 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 - **RTC save/load** — real-time clock state preserved (for Pokémon Gold/Silver/Crystal)
 - **Autosave** — SRAM saved automatically every 5 minutes
 - **Save States** — 10 save slots per game, save/load full emulator state to SD card (F4)
+- **Rewind** — press F5 to rewind gameplay in real time; press F5 again to resume from the rewound point. In-game saves (SRAM) are fully protected — no save corruption
 - **Fast Forward** — 5× and 8× speed modes with audio muted during FF (F6)
 - **FPS counter** — toggle with ESC key, displayed top-right in green
 - **Clean launcher exit** — press F1 to save and return to the Tanmatsu launcher
@@ -37,6 +38,7 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 | F2 | Button layout menu |
 | F3 | Soft reset (return to game title screen) |
 | F4 | Save State menu (10 slots) |
+| F5 | Rewind (press again to resume) |
 | F6 | Fast Forward (OFF → 5× → 8× → OFF) |
 | Backspace | Return to ROM selector |
 
@@ -47,7 +49,7 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 | W / A / S / D | D-pad Up / Left / Down / Right |
 | ; key | Game Boy A |
 | [ key | Game Boy B |
-| Enter / Space / F1 / F3 / F4 / F6 | Same as Default |
+| Enter / Space / F1 / F3 / F4 / F5 / F6 | Same as Default |
 
 ## Save States
 Press **F4** to open the save state menu. The game continues running in the background.
@@ -72,6 +74,12 @@ The ROM selector displays all `.gb` and `.gbc` files found in `/sdcard/roms/`. N
 
 Press **Backspace** at any time during gameplay to save SRAM/RTC and return to the ROM selector without a hardware restart.
 
+## Rewind
+Press **F5** to start rewinding gameplay. The last ~3 seconds of play (20 snapshots, one every 10 frames) is stored in PSRAM. Press **F5 again** to resume from the rewound point.
+
+- Audio is muted during rewind
+- In-game saves (SRAM) are fully protected — a backup is taken when rewind starts and restored on exit, so no save data can be corrupted regardless of how far you rewind
+
 ## Fast Forward
 Press **F6** to cycle through speed modes:
 - **OFF** — normal 60 FPS with audio
@@ -94,7 +102,7 @@ Place `.gb` and `.gbc` ROM files in `/sdcard/roms/` on your SD card. Save files 
 |---|---------|-------|
 | 1 | ~~**Button Config Swap**~~ | ✅ Done — F2 menu: Default / WASD |
 | 2 | ~~**Soft Reset**~~ | ✅ Done — F3 resets game to title screen (SRAM preserved) |
-| 3 | **Reverse Gameplay** | Circular frame buffer rewind — memory intensive |
+| 3 | ~~**Reverse Gameplay**~~ | ✅ Done — F5 rewind, SRAM-safe |
 | 4 | **Internal Resolution Scaling** | Dynamic `SCALE` factor beyond 1:1 |
 | 5 | **Texture Filtering / Shaders** | Post-process pass on PAX framebuffer |
 | 6 | **Overclocking** | ESP32-P4 CPU freq tuning via `esp_pm` |

@@ -131,7 +131,6 @@ void loadstate(FILE *f);
 void vram_dirty(void);
 void sound_dirty(void);
 void mem_updatemap(void);
-
 // Blit PAX framebuffer to display
 
 static void blit(void);
@@ -187,6 +186,21 @@ static volatile int  lm_drawn_a        = 0;
 static volatile int  lm_drawn_b        = 0;
 static inline void lm_invalidate(void) { lm_drawn_a = 0; lm_drawn_b = 0; }
 static volatile int  ff_speed = 0; // 0=1x 1=2x 2=3x
+
+// Rewind: circular PSRAM snapshot buffer
+#define REWIND_SLOTS      20
+#define REWIND_STATE_SZ   (96*1024)
+#define REWIND_SNAP_FREQ  10
+static uint8_t  *rewind_state_buf   = NULL;
+static uint16_t *rewind_pix_buf     = NULL;
+static uint8_t  *rewind_sram_backup = NULL;  // protects in-game saves during rewind
+static int       rw_sizes[REWIND_SLOTS] = {0};
+static int       rw_head          = 0;
+static int       rw_count         = 0;
+static int       rw_pos           = 0;
+static volatile int rewind_active = 0;
+static int       rw_frame_ctr     = 0;
+static uint16_t  rw_hold_pixels[GBC_WIDTH * GBC_HEIGHT];
 static volatile int  return_to_selector = 0;
 static volatile int  i2s_enabled = 1;
 static volatile int  audio_mute = 0;
@@ -570,6 +584,51 @@ void vid_init(void) {
 }
 void vid_close(void) {}
 
+// Release every Game Boy button after rewind exits so restored
+// joypad state doesn't keep the character moving.
+static void rewind_release_all_keys(void) {
+    pad_set(PAD_UP,     0);
+    pad_set(PAD_DOWN,   0);
+    pad_set(PAD_LEFT,   0);
+    pad_set(PAD_RIGHT,  0);
+    pad_set(PAD_A,      0);
+    pad_set(PAD_B,      0);
+    pad_set(PAD_SELECT, 0);
+    pad_set(PAD_START,  0);
+}
+
+static void rewind_push(void) {
+    if (!rewind_state_buf || !rewind_pix_buf) return;
+    uint16_t *pslot = rewind_pix_buf + (size_t)rw_head * GBC_WIDTH * GBC_HEIGHT;
+    memcpy(pslot, gbc_pixels, sizeof(gbc_pixels));
+    uint8_t *sslot = rewind_state_buf + (size_t)rw_head * REWIND_STATE_SZ;
+    FILE *sf = fmemopen(sslot, REWIND_STATE_SZ, "wb");
+    if (!sf) return;
+    savestate(sf);
+    rw_sizes[rw_head] = (int)ftell(sf);
+    fclose(sf);
+    rw_head = (rw_head + 1) % REWIND_SLOTS;
+    if (rw_count < REWIND_SLOTS) rw_count++;
+}
+
+static int rewind_pop(void) {
+    if (!rewind_state_buf || !rewind_pix_buf || rw_pos >= rw_count) return 0;
+    int idx = ((rw_head - 1 - rw_pos) % REWIND_SLOTS + REWIND_SLOTS) % REWIND_SLOTS;
+    uint16_t *pslot = rewind_pix_buf + (size_t)idx * GBC_WIDTH * GBC_HEIGHT;
+    memcpy(gbc_pixels,     pslot, sizeof(gbc_pixels));
+    memcpy(rw_hold_pixels, pslot, sizeof(gbc_pixels));
+    uint8_t *sslot = rewind_state_buf + (size_t)idx * REWIND_STATE_SZ;
+    int sz = rw_sizes[idx];
+    if (sz <= 0) return 0;
+    FILE *lf = fmemopen(sslot, sz, "rb");
+    if (!lf) return 0;
+    loadstate(lf);
+    fclose(lf);
+    vram_dirty(); pal_dirty(); sound_dirty(); mem_updatemap();
+    rw_pos++;
+    return 1;
+}
+
 void vid_begin(void) {
     frame++;
     fb.dirty = 1;
@@ -598,6 +657,32 @@ void vid_end(void) {
         if (sem_emulator_done) xSemaphoreGive(sem_emulator_done);
         vTaskDelete(NULL);
     }
+    // Rewind playback
+    if (rewind_active) {
+        rw_frame_ctr++;
+        if (rw_frame_ctr >= 3) {
+            rw_frame_ctr = 0;
+            if (!rewind_pop()) {
+                // Exhausted all history — trim buffer and stop
+                rw_head  = ((rw_head - rw_pos) % REWIND_SLOTS + REWIND_SLOTS) % REWIND_SLOTS;
+                rw_count = 0;
+                rw_pos        = 0;
+                rewind_active = 0;
+                audio_mute    = 0;
+                rewind_release_all_keys();
+                // Restore SRAM from pre-rewind backup to protect in-game saves
+                if (rewind_sram_backup && ram.sbank && mbc.ramsize > 0) {
+                    memcpy(ram.sbank, rewind_sram_backup, (size_t)mbc.ramsize * 8192);
+                    ram.sram_dirty = 1;
+                }
+            }
+        } else {
+            memcpy(gbc_pixels, rw_hold_pixels, sizeof(gbc_pixels));
+        }
+        fb.dirty = 1;
+        if (fb.dirty) { draw_gbc_screen(); fb.dirty = 0; }
+        return;
+    }
     // Fast forward: ff_speed 0=1x, 1=3x(skip 2), 2=5x(skip 4)
     static int ff_frame = 0;
     static const int ff_skip[] = {0, 4, 7}; // 1x, 5x, 8x
@@ -613,6 +698,14 @@ void vid_end(void) {
     } else {
         ff_frame = 0;
         if (fb.dirty) { draw_gbc_screen(); fb.dirty = 0; }
+    }
+    // Snapshot for rewind (only during normal 1x playback, not while rewinding)
+    if (ff_speed == 0 && !rewind_active) {
+        static int rw_snap_ctr = 0;
+        if (++rw_snap_ctr >= REWIND_SNAP_FREQ) {
+            rw_snap_ctr = 0;
+            rewind_push();
+        }
     }
     // Autosave SRAM every hour (~216000 frames at 60fps)
     if (frame_count % 18000 == 0 && frame_count > 0 && sram_path_global[0]) {
@@ -679,7 +772,7 @@ int pcm_submit(void) {
     if (audio_mute) { pcm.pos = 0; return 1; }
     if (!pcm.buf || pcm.pos == 0) { pcm.pos = 0; return 1; }
     if (!sem_audio_ready || !sem_audio_done) { pcm.pos = 0; return 1; }
-    // Fast forward: feed silence non-blocking so I2S DMA stays quiet
+    // Fast forward: feed silence non-blocking so I2S DMA stays quiet.
     if (ff_speed > 0) {
         if (xSemaphoreTake(sem_audio_done, 0) == pdTRUE) {
             int16_t *ready = (audio_buf_ready == 0) ? audio_buf_a : audio_buf_b;
@@ -878,6 +971,37 @@ void doevents(void) {
                         mem_updatemap();
                         pcm_init();
                         ESP_LOGI(TAG, "Soft reset");
+                    }
+                    break;
+                case BSP_INPUT_NAVIGATION_KEY_F5:
+                    if (pressed && ss_state == SS_MENU_CLOSED && !layout_menu_open) {
+                        if (!rewind_active) {
+                            if (rewind_state_buf && rw_count > 0) {
+                                // Save SRAM before rewinding to protect in-game saves
+                                if (rewind_sram_backup && ram.sbank && mbc.ramsize > 0) {
+                                    memcpy(rewind_sram_backup, ram.sbank, (size_t)mbc.ramsize * 8192);
+                                }
+                                rewind_active = 1;
+                                audio_mute    = 1;
+                                rw_pos        = 0;
+                                rw_frame_ctr  = 2;  // forces pop on the very first vid_end frame
+                                ESP_LOGI(TAG, "Rewind ON (%d snapshots)", rw_count);
+                            }
+                        } else {
+                            // Exit rewind: trim buffer to current resume point
+                            rw_head  = ((rw_head - rw_pos) % REWIND_SLOTS + REWIND_SLOTS) % REWIND_SLOTS;
+                            rw_count = (rw_count > rw_pos) ? rw_count - rw_pos : 0;
+                            rw_pos        = 0;
+                            rewind_active = 0;
+                            audio_mute    = 0;
+                            rewind_release_all_keys();
+                            // Restore SRAM from backup to protect in-game saves
+                            if (rewind_sram_backup && ram.sbank && mbc.ramsize > 0) {
+                                memcpy(ram.sbank, rewind_sram_backup, (size_t)mbc.ramsize * 8192);
+                                ram.sram_dirty = 1;
+                            }
+                            ESP_LOGI(TAG, "Rewind OFF");
+                        }
                     }
                     break;
                 case BSP_INPUT_NAVIGATION_KEY_F4:
@@ -1509,6 +1633,31 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     bsp_audio_set_volume(gbc_volume);
     bsp_audio_set_amplifier(true);
     memset(gbc_pixels, 0, sizeof(gbc_pixels));
+
+    // Allocate rewind buffers in PSRAM (one-time; persists across ROM reloads)
+    if (!rewind_state_buf) {
+        rewind_state_buf = heap_caps_malloc((size_t)REWIND_SLOTS * REWIND_STATE_SZ, MALLOC_CAP_SPIRAM);
+        ESP_LOGI(TAG, "Rewind state buf: %s (%u KB)",
+                 rewind_state_buf ? "OK" : "FAIL",
+                 (unsigned)(REWIND_SLOTS * REWIND_STATE_SZ / 1024));
+    }
+    if (!rewind_pix_buf) {
+        rewind_pix_buf = heap_caps_malloc(
+            (size_t)REWIND_SLOTS * GBC_WIDTH * GBC_HEIGHT * sizeof(uint16_t),
+            MALLOC_CAP_SPIRAM);
+        ESP_LOGI(TAG, "Rewind pix buf:   %s (%u KB)",
+                 rewind_pix_buf ? "OK" : "FAIL",
+                 (unsigned)(REWIND_SLOTS * GBC_WIDTH * GBC_HEIGHT * 2 / 1024));
+    }
+    if (!rewind_sram_backup) {
+        // Max GBC SRAM = 16 banks × 8192 bytes = 128 KB
+        rewind_sram_backup = heap_caps_malloc(16 * 8192, MALLOC_CAP_SPIRAM);
+        ESP_LOGI(TAG, "Rewind SRAM backup: %s (128 KB)", rewind_sram_backup ? "OK" : "FAIL");
+    }
+    // Reset rewind state for new ROM session
+    rw_head = 0; rw_count = 0; rw_pos = 0; rw_frame_ctr = 0; rewind_active = 0; audio_mute = 0;
+    memset(rw_sizes, 0, sizeof(rw_sizes));
+
     emu_run();
 
     vTaskDelete(NULL);
