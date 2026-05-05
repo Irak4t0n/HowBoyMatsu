@@ -144,7 +144,8 @@ static char state_save_dir[320]   = {0};
 #define SS_MENU_LOADING 3
 #define SS_SAVE   0
 #define SS_LOAD   1
-#define SS_CANCEL 2
+#define SS_DELETE 2
+#define SS_CANCEL 3
 
 // Menu rect in PAX coords. Must match draw_ss_menu's R0/RW/C0/BH.
 // vid_end uses these to skip the menu region when the menu is open,
@@ -152,8 +153,8 @@ static char state_save_dir[320]   = {0};
 #define SS_MENU_R0   560
 #define SS_MENU_RW   220
 #define SS_MENU_C0   460
-#define SS_MENU_BH   150
-#define SS_MENU_COL_LO (SS_MENU_C0 - SS_MENU_BH + 1)   // 311
+#define SS_MENU_BH   190
+#define SS_MENU_COL_LO (SS_MENU_C0 - SS_MENU_BH + 1)   // 271
 #define SS_MENU_COL_HI (SS_MENU_C0 + 1)                // 461
 
 // Layout menu rect (top-left quadrant in landscape)
@@ -415,43 +416,43 @@ static const char *rom_selector(void) {
         bool scroll_changed = (scroll != prev_scroll);
         if (full_redraw || scroll_changed) {
             pax_background(&fb_pax, 0xFF111111);
-            pax_simple_rect(&fb_pax, 0xFF1A1A2E, 0, 0, W, HEADER_H);
-            pax_draw_text(&fb_pax, 0xFF00FF88, pax_font_sky_mono, 28, 16, 14, "HowBoyMatsu");
+            pax_simple_rect(&fb_pax, 0xFF2E1A1A, 0, 0, W, HEADER_H);
+            pax_draw_text(&fb_pax, 0xFFFF0000, pax_font_sky_mono, 28, 16, 14, "HowBoyMatsu");
             char counter[32];
             snprintf(counter, sizeof(counter), "%d/%d", selected + 1, rom_count);
             pax_draw_text(&fb_pax, 0xFF888888, pax_font_sky_mono, 18, W - 100, 20, counter);
-            pax_simple_rect(&fb_pax, 0xFF00FF88, 0, HEADER_H, W, 2);
+            pax_simple_rect(&fb_pax, 0xFFFF0000, 0, HEADER_H, W, 2);
             // Fast direct fill for all row backgrounds
             for (int i = 0; i < visible && (scroll + i) < rom_count; i++) {
                 int idx = scroll + i;
                 int row_y = LIST_Y + i * ROW_H;
                 uint16_t bg565;
-                if (idx == selected)       bg565 = 0x07F1;
-                else if (i % 2 == 0)       bg565 = 0x180C;
-                else                       bg565 = 0x2104;
+                if (idx == selected)       bg565 = 0x8000;
+                else if (i % 2 == 0)       bg565 = 0x1800;
+                else                       bg565 = 0x2000;
                 rom_fill_row_direct(row_y, ROW_H, bg565);
             }
             for (int i = 0; i < visible && (scroll + i) < rom_count; i++)
                 rom_selector_draw_row(scroll + i, scroll, selected, W, LIST_Y, ROW_H);
-            pax_simple_rect(&fb_pax, 0xFF1A1A2E, 0, H - FOOTER_H, W, FOOTER_H);
-            pax_simple_rect(&fb_pax, 0xFF00FF88, 0, H - FOOTER_H, W, 2);
+            pax_simple_rect(&fb_pax, 0xFF2E1A1A, 0, H - FOOTER_H, W, FOOTER_H);
+            pax_simple_rect(&fb_pax, 0xFFFF0000, 0, H - FOOTER_H, W, 2);
             pax_draw_text(&fb_pax, 0xFF888888, pax_font_sky_mono, 14, 12, H - FOOTER_H + 10,
-                          "[Up/Down] Navigate   [Enter/A] Launch   [F1] Exit");
+                          "[Up/Down] Navigate   [Enter/A] Launch   [ESC] Exit");
             full_redraw = false;
         } else if (prev_selected != selected) {
             // Only redraw the two changed rows + counter
-            pax_simple_rect(&fb_pax, 0xFF1A1A2E, W - 110, 10, 110, 30);
+            pax_simple_rect(&fb_pax, 0xFF2E1A1A, W - 110, 10, 110, 30);
             char counter[32];
             snprintf(counter, sizeof(counter), "%d/%d", selected + 1, rom_count);
             pax_draw_text(&fb_pax, 0xFF888888, pax_font_sky_mono, 18, W - 100, 20, counter);
             if (prev_selected >= scroll && prev_selected < scroll + visible) {
                 int pi = prev_selected - scroll;
-                uint16_t bg = (pi % 2 == 0) ? 0x180C : 0x2104;
+                uint16_t bg = (pi % 2 == 0) ? 0x1800 : 0x2000;
                 rom_fill_row_direct(LIST_Y + pi * ROW_H, ROW_H, bg);
                 rom_selector_draw_row(prev_selected, scroll, selected, W, LIST_Y, ROW_H);
             }
             if (selected >= scroll && selected < scroll + visible) {
-                rom_fill_row_direct(LIST_Y + (selected - scroll) * ROW_H, ROW_H, 0x07F1);
+                rom_fill_row_direct(LIST_Y + (selected - scroll) * ROW_H, ROW_H, 0x8000);
                 rom_selector_draw_row(selected, scroll, selected, W, LIST_Y, ROW_H);
             }
         }
@@ -476,7 +477,7 @@ static const char *rom_selector(void) {
                         break;
                     case BSP_INPUT_NAVIGATION_KEY_RETURN:
                         return rom_list[selected];
-                    case BSP_INPUT_NAVIGATION_KEY_F1:
+                    case BSP_INPUT_NAVIGATION_KEY_ESC:
                         if (blit_task_handle) vTaskSuspend(blit_task_handle);
                         vTaskDelay(pdMS_TO_TICKS(20));
                         if (render_buf_a) {
@@ -847,19 +848,21 @@ void doevents(void) {
                 switch (event.args_navigation.key) {
                     case BSP_INPUT_NAVIGATION_KEY_UP:
                         ss_cursor--; if (ss_cursor < SS_SAVE) ss_cursor = SS_CANCEL;
-                        if (ss_cursor == SS_LOAD && !ss_exists[ss_slot]) ss_cursor = SS_SAVE;
+                        // skip LOAD and DELETE when slot is empty
+                        if ((ss_cursor == SS_LOAD || ss_cursor == SS_DELETE) && !ss_exists[ss_slot]) ss_cursor = SS_SAVE;
                         break;
                     case BSP_INPUT_NAVIGATION_KEY_DOWN:
                         ss_cursor++; if (ss_cursor > SS_CANCEL) ss_cursor = SS_SAVE;
-                        if (ss_cursor == SS_LOAD && !ss_exists[ss_slot]) ss_cursor = SS_CANCEL;
+                        // skip LOAD and DELETE when slot is empty
+                        if ((ss_cursor == SS_LOAD || ss_cursor == SS_DELETE) && !ss_exists[ss_slot]) ss_cursor = SS_CANCEL;
                         break;
                     case BSP_INPUT_NAVIGATION_KEY_LEFT:
                         ss_slot--; if (ss_slot < 0) ss_slot = 9;
-                        if (ss_cursor == SS_LOAD && !ss_exists[ss_slot]) ss_cursor = SS_SAVE;
+                        if ((ss_cursor == SS_LOAD || ss_cursor == SS_DELETE) && !ss_exists[ss_slot]) ss_cursor = SS_SAVE;
                         break;
                     case BSP_INPUT_NAVIGATION_KEY_RIGHT:
                         ss_slot++; if (ss_slot > 9) ss_slot = 0;
-                        if (ss_cursor == SS_LOAD && !ss_exists[ss_slot]) ss_cursor = SS_SAVE;
+                        if ((ss_cursor == SS_LOAD || ss_cursor == SS_DELETE) && !ss_exists[ss_slot]) ss_cursor = SS_SAVE;
                         break;
                     case BSP_INPUT_NAVIGATION_KEY_RETURN:
                         if (ss_cursor == SS_CANCEL) {
@@ -869,6 +872,9 @@ void doevents(void) {
                             xSemaphoreGive(sem_ss);
                         } else if (ss_cursor == SS_LOAD && ss_exists[ss_slot] && ss_io_op == 0) {
                             ss_io_op = 2; ss_state = SS_MENU_LOADING;
+                            xSemaphoreGive(sem_ss);
+                        } else if (ss_cursor == SS_DELETE && ss_exists[ss_slot] && ss_io_op == 0) {
+                            ss_io_op = 3; ss_state = SS_MENU_SAVING;
                             xSemaphoreGive(sem_ss);
                         }
                         break;
@@ -918,17 +924,28 @@ void doevents(void) {
                 case BSP_INPUT_NAVIGATION_KEY_RETURN: pad_set(PAD_START,  pressed); break;
                 case BSP_INPUT_NAVIGATION_KEY_ESC:
                     if (pressed) {
-                        show_fps = !show_fps;
-                        if (!show_fps) {
-                            // Clear FPS region in both render buffers
-                            uint16_t *pa = (uint16_t *)render_buf_a;
-                            uint16_t *pb = (uint16_t *)render_buf_b;
-                            for (int r = 2; r < 13; r++)
-                                for (int c = 2; c < 58; c++) {
-                                    pa[r * 480 + c] = 0x0000;
-                                    pb[r * 480 + c] = 0x0000;
-                                }
+                        if (sram_path_global[0]) {
+                            FILE *sf = fopen(sram_path_global, "wb");
+                            if (sf) { sram_save(sf); fclose(sf); ESP_LOGI("howboymatsu", "SRAM saved on exit"); }
+                            char rtc_path2[320];
+                            strncpy(rtc_path2, sram_path_global, sizeof(rtc_path2)-1);
+                            char *rdot2 = strrchr(rtc_path2, '.');
+                            if (rdot2) strcpy(rdot2, ".rtc");
+                            FILE *rf = fopen(rtc_path2, "wb");
+                            if (rf) { rtc_save(rf); }  // rtc_save closes file internally
                         }
+                        // Clean exit: stop blit task, black screen, stop audio
+                        if (blit_task_handle) vTaskSuspend(blit_task_handle);
+                        vTaskDelay(pdMS_TO_TICKS(20));
+                        if (render_buf_a) {
+                            memset(render_buf_a, 0, 480 * 800 * 2);
+                            bsp_display_blit(0, 0, 480, 800, render_buf_a);
+                            vTaskDelay(pdMS_TO_TICKS(50));
+                            bsp_display_blit(0, 0, 480, 800, render_buf_a);
+                        }
+                        bsp_audio_set_volume(0);
+                        vTaskDelay(pdMS_TO_TICKS(150));
+                        restart_to_launcher();
                     }
                     break;
                 case BSP_INPUT_NAVIGATION_KEY_VOLUME_UP:
@@ -961,7 +978,7 @@ void doevents(void) {
                         lm_invalidate();
                     }
                     break;
-                case BSP_INPUT_NAVIGATION_KEY_F3:
+                case BSP_INPUT_NAVIGATION_KEY_F1:
                     if (pressed && ss_state == SS_MENU_CLOSED && !layout_menu_open) {
                         memset(gbc_pixels, 0, sizeof(gbc_pixels));
                         emu_reset();
@@ -1019,35 +1036,26 @@ void doevents(void) {
                         ss_menu_invalidate();
                     }
                     break;
-                case BSP_INPUT_NAVIGATION_KEY_F1:
-                    if (pressed) {
-                        if (sram_path_global[0]) {
-                            FILE *sf = fopen(sram_path_global, "wb");
-                            if (sf) { sram_save(sf); fclose(sf); ESP_LOGI("howboymatsu", "SRAM saved on exit"); }
-                            char rtc_path2[320];
-                            strncpy(rtc_path2, sram_path_global, sizeof(rtc_path2)-1);
-                            char *rdot2 = strrchr(rtc_path2, '.');
-                            if (rdot2) strcpy(rdot2, ".rtc");
-                            FILE *rf = fopen(rtc_path2, "wb");
-                            if (rf) { rtc_save(rf); }  // rtc_save closes file internally
-                        }
-                        // Clean exit: stop blit task, black screen, stop audio
-                        if (blit_task_handle) vTaskSuspend(blit_task_handle);
-                        vTaskDelay(pdMS_TO_TICKS(20));
-                        if (render_buf_a) {
-                            memset(render_buf_a, 0, 480 * 800 * 2);
-                            bsp_display_blit(0, 0, 480, 800, render_buf_a);
-                            vTaskDelay(pdMS_TO_TICKS(50));
-                            bsp_display_blit(0, 0, 480, 800, render_buf_a);
-                        }
-                        bsp_audio_set_volume(0);
-                        vTaskDelay(pdMS_TO_TICKS(150));
-                        restart_to_launcher();
-                    }
+                case BSP_INPUT_NAVIGATION_KEY_F3:
                     break;
                 default: break;
             }
         } else if (event.type == INPUT_EVENT_TYPE_KEYBOARD) {
+            // Backtick always toggles FPS regardless of menu state
+            if (event.args_keyboard.ascii == '`') {
+                show_fps = !show_fps;
+                if (!show_fps) {
+                    // Clear FPS region in both render buffers
+                    uint16_t *pa = (uint16_t *)render_buf_a;
+                    uint16_t *pb = (uint16_t *)render_buf_b;
+                    for (int r = 2; r < 13; r++)
+                        for (int c = 2; c < 58; c++) {
+                            pa[r * 480 + c] = 0x0000;
+                            pb[r * 480 + c] = 0x0000;
+                        }
+                }
+                continue;
+            }
             // Layout menu: 'a' confirms selection, all other keys swallowed
             if (layout_menu_open) {
                 if (event.args_keyboard.ascii == 'a' || event.args_keyboard.ascii == 'A') {
@@ -1238,17 +1246,17 @@ static void draw_layout_menu(uint8_t *buf) {
     const int R0=LM_R0, RW=LM_RW, C0=LM_C0, BH=LM_BH;
 
     ss_rect(p, R0, C0, RW, BH, 0x1083);
-    ss_hline(p, R0,       C0,       RW, 0x07E0);
-    ss_hline(p, R0,       C0-BH+1,  RW, 0x07E0);
-    ss_vline(p, R0,       C0,       BH, 0x07E0);
-    ss_vline(p, R0+RW-1,  C0,       BH, 0x07E0);
+    ss_hline(p, R0,       C0,       RW, 0xF800);
+    ss_hline(p, R0,       C0-BH+1,  RW, 0xF800);
+    ss_vline(p, R0,       C0,       BH, 0xF800);
+    ss_vline(p, R0+RW-1,  C0,       BH, 0xF800);
     ss_text(p, "LAYOUT", R0+8, C0-8, SC, 0xFFFF);
 
     const char *labels[] = {"Default", "WASD"};
     for (int i = 0; i < 2; i++) {
         int ic = C0 - 8 - (CH+8)*(i+1);
-        if (lm_cursor == i) ss_text(p, ">", R0+8, ic, SC, 0x07E0);
-        uint16_t tcol = (key_layout == i) ? 0x07E0 : 0xFFFF;
+        if (lm_cursor == i) ss_text(p, ">", R0+8, ic, SC, 0xF800);
+        uint16_t tcol = (key_layout == i) ? 0xF800 : 0xFFFF;
         ss_text(p, labels[i], R0+8+CW*2, ic, SC, tcol);
     }
 }
@@ -1264,29 +1272,37 @@ static void draw_ss_menu(uint8_t *buf) {
 
     // Dark background panel + green border for visibility
     ss_rect(p, R0, C0, RW, BH, 0x1083);
-    ss_hline(p, R0,       C0,       RW, 0x07E0);
-    ss_hline(p, R0,       C0-BH+1,  RW, 0x07E0);
-    ss_vline(p, R0,       C0,       BH, 0x07E0);
-    ss_vline(p, R0+RW-1,  C0,       BH, 0x07E0);
+    ss_hline(p, R0,       C0,       RW, 0xF800);
+    ss_hline(p, R0,       C0-BH+1,  RW, 0xF800);
+    ss_vline(p, R0,       C0,       BH, 0xF800);
+    ss_vline(p, R0+RW-1,  C0,       BH, 0xF800);
     ss_text(p, "SAVE STATE", R0+8, C0-8, SC, 0xFFFF);
 
     char slot_str[24];
     snprintf(slot_str, sizeof(slot_str), "< Slot %d >", (int)ss_slot);
-    ss_text(p, slot_str, R0+8, C0-8-CH-8, SC, 0x07E0);
+    ss_text(p, slot_str, R0+8, C0-8-CH-8, SC, 0xF800);
     ss_text(p, ss_exists[ss_slot] ? "SAVED" : "EMPTY",
-            R0+8+11*CW, C0-8-CH-8, SC, ss_exists[ss_slot] ? 0x07E0 : 0x8410);
+            R0+8+11*CW, C0-8-CH-8, SC, ss_exists[ss_slot] ? 0xF800 : 0x8410);
 
-    const char *items[3] = {"SAVE", "LOAD", "CANCEL"};
-    for (int i = 0; i < 3; i++) {
+    const char *items[4] = {"SAVE", "LOAD", "DELETE", "CANCEL"};
+    for (int i = 0; i < 4; i++) {
         int ic = C0 - 8 - (CH+8)*(i+2) - 8;
-        uint16_t icol = (i == SS_LOAD && !ss_exists[ss_slot]) ? 0x8410 : 0xFFFF;
-        if (ss_cursor == i) ss_text(p, ">", R0+8, ic, SC, 0x07E0);
+        uint16_t icol;
+        if ((i == SS_LOAD || i == SS_DELETE) && !ss_exists[ss_slot])
+            icol = 0x8410; // dimmed — slot empty
+        else if (i == SS_DELETE && ss_exists[ss_slot])
+            icol = 0xF800; // red — destructive action
+        else
+            icol = 0xFFFF;
+        if (ss_cursor == i) ss_text(p, ">", R0+8, ic, SC, 0xF800);
         ss_text(p, items[i], R0+8+CW*2, ic, SC, icol);
     }
 
     if (ss_toast_f > 0) {
         ss_toast_f--;
-        ss_text(p, ss_toast, R0+6, C0-BH+CH+8+CH-2, SC, 0xFFFF);
+        // One slot below CANCEL so it never overlaps menu items
+        int toast_col = C0 - 8 - (CH+8)*6 - 8;
+        ss_text(p, ss_toast, R0+6, toast_col, SC, 0xFFFF);
     }
 }
 static void ss_io_task(void *arg) {
@@ -1309,6 +1325,12 @@ static void ss_io_task(void *arg) {
                 snprintf(ss_toast, sizeof(ss_toast), "Slot %d loaded!", slot);
                 ESP_LOGI("howboymatsu", "State loaded: %s", path);
             } else { snprintf(ss_toast, sizeof(ss_toast), "Slot %d empty!", slot); }
+        } else if (op == 3) {
+            if (remove(path) == 0) {
+                ss_exists[slot] = false;
+                snprintf(ss_toast, sizeof(ss_toast), "Slot %d deleted!", slot);
+                ESP_LOGI("howboymatsu", "State deleted: %s", path);
+            } else { snprintf(ss_toast, sizeof(ss_toast), "Delete failed!"); }
         }
         ss_toast_f = 120;
         ss_io_op = 0;
@@ -1341,7 +1363,7 @@ void blit_task(void *arg) {
             char fps_str[16];
             snprintf(fps_str, sizeof(fps_str), "%.1f", current_fps);
             uint16_t *phys = (uint16_t *)buf;
-            uint16_t green = 0x07E0;
+            uint16_t red = 0xF800;
             // Scale factor for text size
             const int SC = 3;
             // Text origin in physical buffer: top-left corner of game screen
@@ -1385,7 +1407,7 @@ void blit_task(void *arg) {
                                     int px = char_row - (4-col)*SC - sy2;
                                     int py = 4 + (6-row)*SC + sx2;
                                     if (px>=0 && px<800 && py>=0 && py<480)
-                                        phys[px * PHYS_W + py] = green;
+                                        phys[px * PHYS_W + py] = red;
                                 }
                             }
                         }
@@ -1506,7 +1528,7 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
         while (1) {
             bsp_input_event_t ev2;
             if (xQueueReceive(input_event_queue, &ev2, portMAX_DELAY) == pdTRUE)
-                if (ev2.type == INPUT_EVENT_TYPE_NAVIGATION && ev2.args_navigation.key == BSP_INPUT_NAVIGATION_KEY_F1 && ev2.args_navigation.state == 1)
+                if (ev2.type == INPUT_EVENT_TYPE_NAVIGATION && ev2.args_navigation.key == BSP_INPUT_NAVIGATION_KEY_ESC && ev2.args_navigation.state == 1)
                     restart_to_launcher();
         }
     }
@@ -1519,13 +1541,13 @@ sdmmc_host_t host = SDMMC_HOST_DEFAULT();
         pax_background(&fb_pax, 0xFF000000);
         pax_draw_text(&fb_pax, 0xFFFF0000, pax_font_sky_mono, 16, 10, 10, "ROM file not found!");
         pax_draw_text(&fb_pax, 0xFFFFFF00, pax_font_sky_mono, 12, 10, 40, rom_path);
-        pax_draw_text(&fb_pax, 0xFFAAAAAA, pax_font_sky_mono, 12, 10, 70, "Press F1 to return");
+        pax_draw_text(&fb_pax, 0xFFAAAAAA, pax_font_sky_mono, 12, 10, 70, "Press ESC to return");
         blit();
         bsp_input_event_t ev;
         while (1) {
             if (xQueueReceive(input_event_queue, &ev, portMAX_DELAY) == pdTRUE) {
                 if (ev.type == INPUT_EVENT_TYPE_NAVIGATION &&
-                    ev.args_navigation.key == BSP_INPUT_NAVIGATION_KEY_F1) {
+                    ev.args_navigation.key == BSP_INPUT_NAVIGATION_KEY_ESC) {
                     restart_to_launcher();
                 }
             }
@@ -1730,7 +1752,7 @@ void app_main(void) {
     ESP_ERROR_CHECK(bsp_input_get_queue(&input_event_queue));
 
     pax_background(&fb_pax, 0xFF000000);
-    pax_draw_text(&fb_pax, 0xFF00FF00, pax_font_sky_mono, 24, 10, 10,  "HowBoyMatsu");
+    pax_draw_text(&fb_pax, 0xFFFF0000, pax_font_sky_mono, 24, 10, 10,  "HowBoyMatsu");
     pax_draw_text(&fb_pax, 0xFFFFFFFF, pax_font_sky_mono, 14, 10, 50,  "Game Boy Color Emulator");
     pax_draw_text(&fb_pax, 0xFFAAAAAA, pax_font_sky_mono, 12, 10, 80,  "for Tanmatsu");
     pax_draw_text(&fb_pax, 0xFFFFFF00, pax_font_sky_mono, 12, 10, 120, "Loading ROM...");

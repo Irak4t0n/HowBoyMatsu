@@ -74,8 +74,8 @@ Full 800×480 landscape layout with direct pixel rendering (bypasses PAX rotatio
 - Partial redraw on keypress: only 2 rows redrawn (~2ms)
 - **PAX coordinate mapping:** logical (x,y) → physical `buf[x * 480 + (479 - y)]`
 
-Layout: 60px header (green `#00FF88`), 32px rows, 36px footer
-Footer hint: `[Up/Down] Select  [Left/Right] Page  [Enter/A] Launch  [F1] Exit`
+Layout: 60px header, 32px rows, 36px footer
+Footer hint: `[Up/Down] Navigate   [Enter/A] Launch   [ESC] Exit`
 
 ### 4. Return to ROM Selector ✅ (Backspace)
 Press **Backspace** during gameplay to save SRAM/RTC and return to ROM selector.
@@ -130,11 +130,12 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 | D/d | GBC B |
 | Enter | Start |
 | Space | Select |
-| ESC | Toggle FPS |
-| F1 | Save & exit to launcher |
+| ` (backtick) | Toggle FPS |
+| ESC | Save & exit to launcher |
+| F1 | Soft reset (return to game title screen) |
 | F2 | Button layout menu |
 | F4 | Save state menu |
-| F5 | Rewind (hold; F5 again to resume) |
+| F5 | Rewind (F5 again to resume) |
 | F6 | Fast forward (OFF/5×/8×) |
 | Backspace | Return to ROM selector |
 
@@ -147,8 +148,9 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 | [ | GBC B |
 | Enter | Start |
 | Space | Select |
-| ESC | Toggle FPS |
-| F1 | Save & exit to launcher |
+| ` (backtick) | Toggle FPS |
+| ESC | Save & exit to launcher |
+| F1 | Soft reset (return to game title screen) |
 | F2 | Button layout menu |
 | F4 | Save state menu |
 | F5 | Rewind (F5 again to resume) |
@@ -166,6 +168,44 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 6. Overclocking
 7. Netplay
 8. Input Mapping Profiles
+
+---
+
+## Session May 5 2026
+
+### Key Remapping
+Reorganized function key assignments for better ergonomics:
+- **Backtick (`)** — Toggle FPS counter (was ESC)
+- **ESC** — Save & return to launcher (was F1)
+- **F1** — Soft reset / return to game title screen (was F3)
+- **F3** — Unassigned (freed up)
+
+All affected locations updated: gameplay navigation handler, ROM selector handler, error/no-ROM
+wait loops, ROM selector footer hint text, error screen prompt text.
+
+### UI Color Theme — Red
+Replaced all green/blue UI accents with red throughout the ROM selector and menus:
+- All RGB565 green (`0x07E0`) → red (`0xF800`): menu borders, cursors, separators, FPS overlay
+- Selected row (`0x07F1`) → dark red (`0x8000`)
+- PAX mint green (`0xFF00FF88`) → PAX red (`0xFFFF0000`)
+- ROM selector header/footer panel navy (`0xFF1A1A2E`) → dark maroon (`0xFF2E1A1A`)
+- ROM selector alternating row colors (`0x180C`, `0x2104`) → red shades (`0x1800`, `0x2000`)
+- HowBoyMatsu title text green (`0xFF00FF00`) → red (`0xFFFF0000`)
+
+### Save State — DELETE option
+Added a fourth menu item **DELETE** to the save state overlay (op code 3 in `ss_io_task`):
+- Calls `remove()` on the `.ssN` file path
+- Clears `ss_exists[slot]`; shows "Slot N deleted!" toast
+- DELETE shown in red when slot exists, greyed out when slot is empty
+
+### Rewind — SRAM Protection
+Rewound state snapshots use `savestate()`/`loadstate()` which overwrites `ram.sbank`. Fixed by:
+- Copying `ram.sbank` to `rewind_sram_backup` (128 KB PSRAM) on F5 entry
+- Restoring on F5-exit and on auto-exhaust; setting `ram.sram_dirty = 1`
+
+### Rewind — Flash Fix
+Set `rw_frame_ctr = 2` on rewind entry so the first `vid_end` call immediately pops a snapshot
+rather than displaying 2 stale frames.
 
 ---
 

@@ -33,10 +33,10 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 | Enter | Start |
 | Space | Select |
 | Volume Up/Down | Volume |
-| ESC | Toggle FPS counter |
-| F1 | Save & return to launcher |
+| ` (backtick) | Toggle FPS counter |
+| ESC | Save & return to launcher |
+| F1 | Soft reset (return to game title screen) |
 | F2 | Button layout menu |
-| F3 | Soft reset (return to game title screen) |
 | F4 | Save State menu (10 slots) |
 | F5 | Rewind (press again to resume) |
 | F6 | Fast Forward (OFF → 5× → 8× → OFF) |
@@ -49,7 +49,7 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 | W / A / S / D | D-pad Up / Left / Down / Right |
 | ; key | Game Boy A |
 | [ key | Game Boy B |
-| Enter / Space / F1 / F3 / F4 / F5 / F6 | Same as Default |
+| Enter / Space / ESC / F1 / F4 / F5 / F6 | Same as Default |
 
 ## Save States
 Press **F4** to open the save state menu. The game continues running in the background.
