@@ -171,6 +171,26 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 
 ---
 
+## Session May 6 2026 — Launcher Icon Fix
+
+### Fix: Off-centre screen element in launcher icon
+
+The 32×32 launcher icon had the game console screen shifted ~3.5 px left of the body centre.
+
+**Root cause:** Body spans cols 3–28 (centre = 15.5). Screen bezel was `fill(3, 15, 5, 20, S)` → cols 5–19 (centre = 12.0) and screen green was `fill(4, 14, 6, 19, G)` → cols 6–18 (centre = 12.0).
+
+**Fix in `make_icon.py`:**
+- Screen bezel: `fill(3, 15, 5, 20, S)` → `fill(3, 15, 9, 23, S)` — cols 9–22, centre 15.5
+- Screen green: `fill(4, 14, 6, 19, G)` → `fill(4, 14, 10, 22, G)` — cols 10–21, centre 15.5
+
+`icon.png` regenerated and re-uploaded to `/int/apps/application/icon.png` on the badge.
+
+### Files Changed
+- `make_icon.py` — screen bezel and green fill coordinates corrected
+- `icon.png` — regenerated
+
+---
+
 ## Session May 5 2026 (session 5)
 
 ### Feature: Scale Mode Menu (F3)

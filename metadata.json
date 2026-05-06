@@ -1,0 +1,9 @@
+{
+    "name": "HowBoyMatsu",
+    "slug": "application",
+    "version": "1",
+    "description": "Game Boy Color emulator for Tanmatsu",
+    "icon": {
+        "32x32": "icon.png"
+    }
+}
