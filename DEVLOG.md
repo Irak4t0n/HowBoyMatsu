@@ -171,6 +171,35 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 
 ---
 
+## Session May 6 2026 — Fix: Launcher icon executable metadata
+
+### Problem
+After uploading `icon.png` and `metadata.json` to `/int/apps/application/` on the badge, the launcher displayed the icon but showed "unknown executable type" when attempting to launch the app.
+
+### Root cause
+The launcher (`tanmatsu-launcher` v0.1.2) parses an `"application"` array in `metadata.json` to find a device-specific executable entry. Without it, the launcher emits `"No matching executable found for device tanmatsu"` and falls back to a filesystem path that doesn't exist, causing the error.
+
+### Fix
+Added the correct `"application"` array to `metadata.json` per the [tanmatsu-launcher source](https://github.com/Nicolai-Electronics/tanmatsu-launcher/):
+
+```json
+"application": [
+    {
+        "targets": ["tanmatsu"],
+        "type": "appfs",
+        "executable": "application.bin",
+        "revision": 0
+    }
+]
+```
+
+For `"type": "appfs"`, the launcher resolves the binary by calling `find_appfs_handle_for_slug()` with the top-level `"slug"` value (`"application"`), matching our appfs entry.
+
+### Files Changed
+- `metadata.json` — added `application` array with tanmatsu target
+
+---
+
 ## Session May 6 2026 — Codebase Refactor
 
 ### Motivation

@@ -1,7 +1,7 @@
 # HowBoyMatsu
 A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the GnuBoy project.
 
-*Last updated: May 6, 2026 (session 7)*
+*Last updated: May 6, 2026 (session 8)*
 
 ---
 

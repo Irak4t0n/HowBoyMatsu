@@ -5,5 +5,13 @@
     "description": "Game Boy Color emulator for Tanmatsu",
     "icon": {
         "32x32": "icon.png"
-    }
+    },
+    "application": [
+        {
+            "targets": ["tanmatsu"],
+            "type": "appfs",
+            "executable": "application.bin",
+            "revision": 0
+        }
+    ]
 }
