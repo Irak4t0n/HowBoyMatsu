@@ -1,7 +1,7 @@
 # HowBoyMatsu
 A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the GnuBoy project.
 
-*Last updated: May 5, 2026 (session 4)*
+*Last updated: May 5, 2026 (session 5)*
 
 ---
 
@@ -13,6 +13,7 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 - **SRAM save/load** — in-game saves persist across sessions
 - **RTC save/load** — real-time clock state preserved (for Pokémon Gold/Silver/Crystal)
 - **Autosave** — SRAM saved automatically every 5 minutes
+- **Scale modes** — F3 menu: STRETCH (fills screen), FIT (aspect-correct 533×480), 3X (integer 3× pixel-perfect centered)
 - **Save States** — 10 save slots per game, save/load full emulator state to SD card (F4)
 - **Rewind** — press F5 to rewind gameplay in real time; press F5 again to resume from the rewound point. In-game saves (SRAM) are fully protected — no save corruption
 - **Fast Forward** — 5× and 8× speed modes with audio muted during FF (F6)
@@ -37,6 +38,7 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 | ESC | Save & return to launcher |
 | F1 | Soft reset (return to game title screen) |
 | F2 | Button layout menu |
+| F3 | Scale mode menu (STRETCH / FIT / 3X) |
 | F4 | Save State menu (10 slots) |
 | F5 | Rewind (press again to resume) |
 | F6 | Fast Forward (OFF → 5× → 8× → OFF) |
@@ -49,7 +51,13 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 | W / A / S / D | D-pad Up / Left / Down / Right |
 | ; key | Game Boy A |
 | [ key | Game Boy B |
-| Enter / Space / ESC / F1 / F2 / F4 / F5 / F6 | Same as Default |
+| Enter / Space / ESC / F1 / F2 / F3 / F4 / F5 / F6 | Same as Default |
+
+## Scale Modes
+Press **F3** to open the scale menu:
+- **STRETCH** — stretches the game to fill the full 800×480 display (default, non-integer Y scale)
+- **FIT** — aspect-correct 533×480, 133 px black bars left and right, same proportions as the original GBC screen
+- **3X** — integer 3× scale, 480×432 pixel-perfect centered image with black borders on all sides
 
 ## Save States
 Press **F4** to open the save state menu. The game continues running in the background.
@@ -103,8 +111,8 @@ Place `.gb` and `.gbc` ROM files in `/sdcard/roms/` on your SD card. Save files 
 | 1 | ~~**Button Config Swap**~~ | ✅ Done — F2 menu: Default / WASD |
 | 2 | ~~**Soft Reset**~~ | ✅ Done — F1 resets game to title screen (SRAM preserved) |
 | 3 | ~~**Reverse Gameplay**~~ | ✅ Done — F5 rewind, SRAM-safe |
-| 4 | **Internal Resolution Scaling** | Dynamic `SCALE` factor beyond 1:1 |
-| 5 | **Texture Filtering / Shaders** | Post-process pass on PAX framebuffer |
+| 4 | ~~**Internal Resolution Scaling**~~ | ✅ Done — F3 menu: STRETCH / FIT / 3X |
+| 5 | ~~**Texture Filtering / Shaders**~~ | Removed: PSRAM write bottleneck + RISC-V multiply cost make smooth interpolation impossible at 59 FPS |
 | 6 | **Overclocking** | ESP32-P4 CPU freq tuning via `esp_pm` |
 | 7 | **Netplay** | WiFi link cable emulation |
 

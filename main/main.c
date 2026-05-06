@@ -165,6 +165,27 @@ static char state_save_dir[320]   = {0};
 #define LM_COL_LO (LM_C0 - LM_BH + 1)   // 241
 #define LM_COL_HI (LM_C0 + 1)            // 351
 
+// Scale menu rect (same quadrant as layout menu — never open simultaneously)
+#define SM_R0     50
+#define SM_RW    200
+#define SM_C0    350
+#define SM_BH    140
+#define SM_COL_LO (SM_C0 - SM_BH + 1)   // 211
+#define SM_COL_HI (SM_C0 + 1)            // 351
+
+// Scale / display mode
+#define SCALE_FILL  0   // stretch to fill 800×480 (default)
+#define SCALE_FIT   1   // aspect-correct 533×480, 133 px black bars left/right
+#define SCALE_3X    2   // integer 3× → 480×432 centred with black border
+#define SCALE_COUNT 3
+
+static volatile int scale_mode         = SCALE_FILL;
+static volatile int scale_menu_open    = 0;
+static volatile int scale_cursor       = 0;
+static volatile int scale_drawn_a      = 0;
+static volatile int scale_drawn_b      = 0;
+static volatile int scale_border_dirty = 0; // counts down; clears border on mode change
+static inline void scale_invalidate(void) { scale_drawn_a = 0; scale_drawn_b = 0; }
 
 static volatile int  ss_state      = SS_MENU_CLOSED;
 static volatile int  ss_slot       = 0;
@@ -528,34 +549,137 @@ void draw_gbc_screen(void) {
     // Which menus are open (their rects must be preserved across frames)
     int menu_open = (ss_state == SS_MENU_OPEN || ss_state == SS_MENU_SAVING || ss_state == SS_MENU_LOADING);
     int lm_open   = layout_menu_open;
+    int sm_open   = scale_menu_open;
 
-    for (int gx = 0; gx < GBC_W; gx++) {
-        uint16_t *rp = scaled_row_565;
-        for (int gy = GBC_H - 1; gy >= 0; gy--) {
-            uint16_t pixel = gbc_pixels[gy * GBC_W + gx];
-            uint8_t r5 = (pixel >> 11) & 0x1F;
-            uint8_t g6 = (pixel >> 5)  & 0x3F;
-            uint8_t b5 =  pixel        & 0x1F;
-            uint16_t p565 = (r5 << 11) | (g6 << 5) | b5;
-            *rp++ = p565; *rp++ = p565; *rp++ = p565;
-            if (gy % 3 == 0) { *rp++ = p565; }
+    // On scale mode change: zero the black border for 2 frames (both render buffers).
+    // FILL overwrites every row each frame so needs no clearing.
+    if (scale_border_dirty > 0) {
+        if (scale_mode == SCALE_FIT) {
+            memset(phys,               0, 133 * PHYS_W * 2);  // rows 0..132
+            memset(phys + 666 * PHYS_W, 0, 134 * PHYS_W * 2); // rows 666..799
+        } else if (scale_mode == SCALE_3X) {
+            memset(phys,               0, 160 * PHYS_W * 2);  // rows 0..159
+            memset(phys + 640 * PHYS_W, 0, 160 * PHYS_W * 2); // rows 640..799
         }
-        int row_start = gx * V_SCALE;
-        for (int rep = 0; rep < V_SCALE; rep++) {
-            int row = row_start + rep;
-            uint16_t *dst = phys + row * PHYS_W;
-            if (menu_open && row >= SS_MENU_R0 && row < SS_MENU_R0 + SS_MENU_RW) {
-                if (SS_MENU_COL_LO > 0)
-                    memcpy(dst, scaled_row_565, SS_MENU_COL_LO * 2);
-                if (SS_MENU_COL_HI < PHYS_W)
-                    memcpy(dst + SS_MENU_COL_HI, scaled_row_565 + SS_MENU_COL_HI, (PHYS_W - SS_MENU_COL_HI) * 2);
-            } else if (lm_open && row >= LM_R0 && row < LM_R0 + LM_RW) {
-                if (LM_COL_LO > 0)
-                    memcpy(dst, scaled_row_565, LM_COL_LO * 2);
-                if (LM_COL_HI < PHYS_W)
-                    memcpy(dst + LM_COL_HI, scaled_row_565 + LM_COL_HI, (PHYS_W - LM_COL_HI) * 2);
-            } else {
-                memcpy(dst, scaled_row_565, PHYS_W * 2);
+        scale_border_dirty--;
+    }
+
+    if (scale_mode == SCALE_FILL) {
+        // ── FILL: stretch 160×144 to 800×480 (5× H, 3.33× V) ──────────────
+        for (int gx = 0; gx < GBC_W; gx++) {
+            uint16_t *rp = scaled_row_565;
+            for (int gy = GBC_H - 1; gy >= 0; gy--) {
+                uint16_t pixel = gbc_pixels[gy * GBC_W + gx];
+                uint8_t r5 = (pixel >> 11) & 0x1F;
+                uint8_t g6 = (pixel >> 5)  & 0x3F;
+                uint8_t b5 =  pixel        & 0x1F;
+                uint16_t p565 = (r5 << 11) | (g6 << 5) | b5;
+                *rp++ = p565; *rp++ = p565; *rp++ = p565;
+                if (gy % 3 == 0) { *rp++ = p565; }
+            }
+            int row_start = gx * V_SCALE;
+            for (int rep = 0; rep < V_SCALE; rep++) {
+                int row = row_start + rep;
+                uint16_t *dst = phys + row * PHYS_W;
+                if (menu_open && row >= SS_MENU_R0 && row < SS_MENU_R0 + SS_MENU_RW) {
+                    if (SS_MENU_COL_LO > 0)
+                        memcpy(dst, scaled_row_565, SS_MENU_COL_LO * 2);
+                    if (SS_MENU_COL_HI < PHYS_W)
+                        memcpy(dst + SS_MENU_COL_HI, scaled_row_565 + SS_MENU_COL_HI, (PHYS_W - SS_MENU_COL_HI) * 2);
+                } else if (lm_open && row >= LM_R0 && row < LM_R0 + LM_RW) {
+                    if (LM_COL_LO > 0)
+                        memcpy(dst, scaled_row_565, LM_COL_LO * 2);
+                    if (LM_COL_HI < PHYS_W)
+                        memcpy(dst + LM_COL_HI, scaled_row_565 + LM_COL_HI, (PHYS_W - LM_COL_HI) * 2);
+                } else if (sm_open && row >= SM_R0 && row < SM_R0 + SM_RW) {
+                    if (SM_COL_LO > 0)
+                        memcpy(dst, scaled_row_565, SM_COL_LO * 2);
+                    if (SM_COL_HI < PHYS_W)
+                        memcpy(dst + SM_COL_HI, scaled_row_565 + SM_COL_HI, (PHYS_W - SM_COL_HI) * 2);
+                } else {
+                    memcpy(dst, scaled_row_565, PHYS_W * 2);
+                }
+            }
+        }
+    } else if (scale_mode == SCALE_FIT) {
+        // ── FIT: aspect-correct 533×480, 133 px black bars left/right ──────
+        // Both axes scale at 480/144 = 3.33×.
+        // GBC X: 160 cols → 533 rows starting at row 133.
+        //   row_count = 3 for most gx; 4 when gx%3==0 && gx>0 (53 such cols → 533 total).
+        int row = 133;
+        for (int gx = 0; gx < GBC_W; gx++) {
+            uint16_t *rp = scaled_row_565;
+            for (int gy = GBC_H - 1; gy >= 0; gy--) {
+                uint16_t pixel = gbc_pixels[gy * GBC_W + gx];
+                uint8_t r5 = (pixel >> 11) & 0x1F;
+                uint8_t g6 = (pixel >> 5)  & 0x3F;
+                uint8_t b5 =  pixel        & 0x1F;
+                uint16_t p565 = (r5 << 11) | (g6 << 5) | b5;
+                *rp++ = p565; *rp++ = p565; *rp++ = p565;
+                if (gy % 3 == 0) { *rp++ = p565; }
+            }
+            int row_count = (gx > 0 && gx % 3 == 0) ? 4 : 3;
+            for (int rep = 0; rep < row_count; rep++, row++) {
+                uint16_t *dst = phys + row * PHYS_W;
+                if (menu_open && row >= SS_MENU_R0 && row < SS_MENU_R0 + SS_MENU_RW) {
+                    if (SS_MENU_COL_LO > 0)
+                        memcpy(dst, scaled_row_565, SS_MENU_COL_LO * 2);
+                    if (SS_MENU_COL_HI < PHYS_W)
+                        memcpy(dst + SS_MENU_COL_HI, scaled_row_565 + SS_MENU_COL_HI, (PHYS_W - SS_MENU_COL_HI) * 2);
+                } else if (lm_open && row >= LM_R0 && row < LM_R0 + LM_RW) {
+                    if (LM_COL_LO > 0)
+                        memcpy(dst, scaled_row_565, LM_COL_LO * 2);
+                    if (LM_COL_HI < PHYS_W)
+                        memcpy(dst + LM_COL_HI, scaled_row_565 + LM_COL_HI, (PHYS_W - LM_COL_HI) * 2);
+                } else if (sm_open && row >= SM_R0 && row < SM_R0 + SM_RW) {
+                    if (SM_COL_LO > 0)
+                        memcpy(dst, scaled_row_565, SM_COL_LO * 2);
+                    if (SM_COL_HI < PHYS_W)
+                        memcpy(dst + SM_COL_HI, scaled_row_565 + SM_COL_HI, (PHYS_W - SM_COL_HI) * 2);
+                } else {
+                    memcpy(dst, scaled_row_565, PHYS_W * 2);
+                }
+            }
+        }
+    } else {
+        // ── 3×: integer 3× scale → 480×432, centred in 800×480 ─────────────
+        // GBC X (0..159) → rows 160..639 (3 rows each, exact).
+        // GBC Y (0..143) → cols 24..455 (3 cols each, exact).
+        // Border positions in scaled_row_565 are zeroed once before the loop.
+        memset(scaled_row_565,       0, 24 * sizeof(uint16_t)); // cols 0..23
+        memset(scaled_row_565 + 456, 0, 24 * sizeof(uint16_t)); // cols 456..479
+        for (int gx = 0; gx < GBC_W; gx++) {
+            uint16_t *rp = scaled_row_565 + 24;
+            for (int gy = GBC_H - 1; gy >= 0; gy--) {
+                uint16_t pixel = gbc_pixels[gy * GBC_W + gx];
+                uint8_t r5 = (pixel >> 11) & 0x1F;
+                uint8_t g6 = (pixel >> 5)  & 0x3F;
+                uint8_t b5 =  pixel        & 0x1F;
+                uint16_t p565 = (r5 << 11) | (g6 << 5) | b5;
+                *rp++ = p565; *rp++ = p565; *rp++ = p565;
+            }
+            int row_start = gx * 3 + 160;
+            for (int rep = 0; rep < 3; rep++) {
+                int row = row_start + rep;
+                uint16_t *dst = phys + row * PHYS_W;
+                if (menu_open && row >= SS_MENU_R0 && row < SS_MENU_R0 + SS_MENU_RW) {
+                    if (SS_MENU_COL_LO > 0)
+                        memcpy(dst, scaled_row_565, SS_MENU_COL_LO * 2);
+                    if (SS_MENU_COL_HI < PHYS_W)
+                        memcpy(dst + SS_MENU_COL_HI, scaled_row_565 + SS_MENU_COL_HI, (PHYS_W - SS_MENU_COL_HI) * 2);
+                } else if (lm_open && row >= LM_R0 && row < LM_R0 + LM_RW) {
+                    if (LM_COL_LO > 0)
+                        memcpy(dst, scaled_row_565, LM_COL_LO * 2);
+                    if (LM_COL_HI < PHYS_W)
+                        memcpy(dst + LM_COL_HI, scaled_row_565 + LM_COL_HI, (PHYS_W - LM_COL_HI) * 2);
+                } else if (sm_open && row >= SM_R0 && row < SM_R0 + SM_RW) {
+                    if (SM_COL_LO > 0)
+                        memcpy(dst, scaled_row_565, SM_COL_LO * 2);
+                    if (SM_COL_HI < PHYS_W)
+                        memcpy(dst + SM_COL_HI, scaled_row_565 + SM_COL_HI, (PHYS_W - SM_COL_HI) * 2);
+                } else {
+                    memcpy(dst, scaled_row_565, PHYS_W * 2);
+                }
             }
         }
     }
@@ -893,6 +1017,31 @@ void doevents(void) {
                 continue; // swallow all input while menu open
             }
 
+            // Scale menu input routing
+            if (scale_menu_open && pressed) {
+                switch (event.args_navigation.key) {
+                    case BSP_INPUT_NAVIGATION_KEY_UP:
+                        scale_cursor--;
+                        if (scale_cursor < 0) scale_cursor = SCALE_COUNT - 1;
+                        scale_invalidate(); break;
+                    case BSP_INPUT_NAVIGATION_KEY_DOWN:
+                        scale_cursor++;
+                        if (scale_cursor >= SCALE_COUNT) scale_cursor = 0;
+                        scale_invalidate(); break;
+                    case BSP_INPUT_NAVIGATION_KEY_RETURN:
+                        scale_mode = scale_cursor;
+                        scale_menu_open = 0;
+                        scale_border_dirty = 2;
+                        scale_invalidate();
+                        ESP_LOGI(TAG, "Scale: %s", (const char*[]){"STRETCH","FIT","3X"}[scale_mode]);
+                        break;
+                    case BSP_INPUT_NAVIGATION_KEY_F3:
+                        scale_menu_open = 0; scale_invalidate(); break;
+                    default: break;
+                }
+                continue;
+            }
+
             // Layout menu input routing
             if (layout_menu_open && pressed) {
                 switch (event.args_navigation.key) {
@@ -969,6 +1118,13 @@ void doevents(void) {
                         ff_speed = (ff_speed + 1) % 3;
                         const char *ff_labels[] = {"OFF", "5x", "8x"};
                         ESP_LOGI(TAG, "Fast forward: %s", ff_labels[ff_speed]);
+                    }
+                    break;
+                case BSP_INPUT_NAVIGATION_KEY_F3:
+                    if (pressed && ss_state == SS_MENU_CLOSED && !layout_menu_open) {
+                        scale_cursor = scale_mode;
+                        scale_menu_open = 1;
+                        scale_invalidate();
                     }
                     break;
                 case BSP_INPUT_NAVIGATION_KEY_F2:
@@ -1238,6 +1394,27 @@ static void ss_text(uint16_t *p, const char *s, int row, int col, int sc, uint16
     }
 }
 
+static void draw_scale_menu(uint8_t *buf) {
+    uint16_t *p = (uint16_t *)buf;
+    const int SC = 2, CW = 6*SC, CH = 8*SC;
+    const int R0=SM_R0, RW=SM_RW, C0=SM_C0, BH=SM_BH;
+
+    ss_rect(p, R0, C0, RW, BH, 0x1083);
+    ss_hline(p, R0,      C0,      RW, 0xF800);
+    ss_hline(p, R0,      C0-BH+1, RW, 0xF800);
+    ss_vline(p, R0,      C0,      BH, 0xF800);
+    ss_vline(p, R0+RW-1, C0,      BH, 0xF800);
+    ss_text(p, "SCALE", R0+8, C0-8, SC, 0xFFFF);
+
+    const char *slabels[SCALE_COUNT] = {"STRETCH", "FIT", "3X"};
+    for (int i = 0; i < SCALE_COUNT; i++) {
+        int ic = C0 - 8 - (CH+8)*(i+1);
+        if (scale_cursor == i) ss_text(p, ">",           R0+8,      ic, SC, 0xF800);
+        uint16_t tcol = (scale_mode == i) ? 0xF800 : 0xFFFF;
+        ss_text(p, slabels[i], R0+8+CW*2, ic, SC, tcol);
+    }
+}
+
 static void draw_layout_menu(uint8_t *buf) {
     uint16_t *p = (uint16_t *)buf;
     const int SC = 2, CW = 6*SC, CH = 8*SC;
@@ -1444,6 +1621,18 @@ void blit_task(void *arg) {
         } else {
             lm_drawn_a = 0;
             lm_drawn_b = 0;
+        }
+        // Scale menu overlay
+        if (scale_menu_open) {
+            int sm_dirty = (active_render_buf == 0) ? !scale_drawn_a : !scale_drawn_b;
+            if (sm_dirty) {
+                draw_scale_menu(buf);
+                if (active_render_buf == 0) scale_drawn_a = 1;
+                else                        scale_drawn_b = 1;
+            }
+        } else {
+            scale_drawn_a = 0;
+            scale_drawn_b = 0;
         }
         bsp_display_blit(0, 0, PHYS_W, PHYS_H, buf);
         xSemaphoreGive(sem_frame_done);

@@ -171,6 +171,25 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 
 ---
 
+## Session May 5 2026 (session 5)
+
+### Feature: Scale Mode Menu (F3)
+
+F3 opens a "SCALE" overlay menu with three display modes:
+
+- **STRETCH** (0) — fills 800×480, 5×H / 3.33×V non-integer Y scale (original behaviour)
+- **FIT** (1) — aspect-correct 533×480, 133 px black bars left/right; both axes scale at 480/144 = 3.33×; GBC X column count uses same 3+4 pattern as FILL Y scale to reach 533 rows
+- **3X** (2) — integer 3×3 scale: 480×432 centred in 800×480 with 160 px rows above/below and 24 px col bands left/right; zero fractional pixels; pixels are square on-screen
+
+**Implementation:** blit paths for all three modes were already present in `draw_gbc_screen()`. This session wired the UI:
+- `draw_scale_menu()` — same overlay pattern as `draw_layout_menu()`
+- F3 key handler — opens menu when no other menu is open
+- Scale menu input routing — Up/Down cursor, Enter to confirm, F3 to cancel
+- Scale menu overlay in `blit_task` — persistent-render pattern (scale_drawn_a/b)
+- `scale_border_dirty = 2` on mode change — clears black border rows in both render buffers over 2 frames
+
+---
+
 ## Session May 5 2026 (session 4)
 
 ### Extended Rewind Duration
