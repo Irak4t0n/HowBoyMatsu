@@ -60,8 +60,8 @@ while (1) {
 
 ### 3. Rewind (Time Rewind) ✅
 - **F5** starts rewind; **F5 again** resumes from rewound point
-- 20-slot circular snapshot buffer in PSRAM: `rewind_state_buf` (20 × 96 KB) + `rewind_pix_buf` (20 × 90 KB)
-- Snapshots taken every 10 frames via `fmemopen`/`savestate`; played back every 3 frames via `loadstate`
+- 40-slot circular snapshot buffer in PSRAM: `rewind_state_buf` (40 × 96 KB) + `rewind_pix_buf` (40 × 90 KB) — ~10 seconds at 59 FPS
+- Snapshots taken every 15 frames via `fmemopen`/`savestate`; played back every 3 frames via `loadstate`
 - **SRAM protected:** a copy of `ram.sbank` is saved to `rewind_sram_backup` before rewind starts; restored on exit — in-game saves are never corrupted
 - All 8 GBC buttons force-released on rewind exit to prevent phantom movement
 - Audio muted during rewind; buffer trimmed to resume point on exit
@@ -161,13 +161,64 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 
 ## Planned Features
 1. ~~Button Config Swap~~ — DONE (F2 menu, Default / WASD)
-2. Return to Main Menu (F1 already exits to launcher)
+2. Return to Main Menu (ESC exits to launcher)
 3. ~~Reverse Gameplay (rewind)~~ — DONE (F5, SRAM-safe)
 4. Internal Resolution Scaling
-5. Texture Filtering/Shaders
+5. ~~Texture Filtering/Shaders~~ — Removed: hardware bottlenecks (PSRAM write speed, RISC-V multiply cost) make smooth interpolation impossible at 59 FPS on ESP32-P4
 6. Overclocking
 7. Netplay
 8. Input Mapping Profiles
+
+---
+
+## Session May 5 2026 (session 4)
+
+### Extended Rewind Duration
+
+Increased rewind buffer from ~3.4 seconds to ~10 seconds:
+
+- `REWIND_SLOTS`: 20 → 40
+- `REWIND_SNAP_FREQ`: 10 → 15 frames per snapshot (~0.25s granularity at 59 FPS)
+- PSRAM cost: ~2.8 MB → ~5.6 MB (state buf + pixel buf)
+- Allocation is guarded — if PSRAM is insufficient the rewind feature disables itself cleanly
+
+---
+
+## Session May 5 2026 (session 3)
+
+### Removed: SMOOTH Display Mode
+
+Attempted bilinear / smooth interpolation as an F3-selectable display mode. All approaches failed to meet the 59 FPS bar:
+
+- **Row-major bilinear (per-pixel PSRAM writes):** 7–11 FPS — PSRAM per-pixel store latency (~50–80 cycles each) vs. memcpy burst
+- **Column-major bilinear-Y (5× fewer lerps):** 38 FPS — 76,800 multiplications × ~40 cycles = ~12 ms/frame extra; 15 ms PSRAM floor + 12 ms compute = 27 ms → 37 FPS ceiling
+- **Seam-blend (no multiply, 50/50 average with 0xF7DE mask):** 57–59 FPS but visually imperceptible at gameplay speeds — only 1 of 3–4 physical pixels per GBC row boundary was blended
+
+Root cause: the 3.33× Y scale means each GBC source pixel spans 3–4 physical pixels. Any per-pixel math beyond memcpy either hits the PSRAM write bottleneck or the multiply cost; the seam-only approach avoids both but is too subtle to see.
+
+**Decision:** removed the entire SMOOTH mode and F3 shader menu. F3 is now unassigned.
+
+---
+
+## Session May 5 2026 (session 2)
+
+### Feature: Display Mode / Shader Menu (F3)
+
+**New key:** F3 opens a "DISPLAY" menu overlay with cursor-selectable display modes.
+Modes:
+- **NEAREST** (0) — original nearest-neighbor block scaling (pixel-perfect)
+- **HD SHARP** (1) — sharp bilinear interpolation
+
+**Sharp bilinear algorithm:**
+- Precomputed LUT (`bilinear_lut_init`, called lazily on first HD frame):
+  - `blit_gx0/gx1/tx[800]` — physical row → GBC X neighbours + sharpened fraction
+  - `blit_gy0/gy1/ty[480]` — physical col → GBC Y neighbours + sharpened fraction (inverted for 90° rotation)
+- Sharp curve: `clamp(0.5 + (t - 0.5) * 4, 0, 1)` — pixel interiors map to 0 or 1, only ±1/8 of pixel width does actual blending → crisp not blurry
+- Fixed-point two-step bilinear: lerp X (>>8), lerp Y (>>8), no floats in inner loop
+- Writes all 800×480 output pixels; skips preserved menu rects same as nearest path
+
+**Globals added:** `shader_mode`, `shader_menu_open`, `shader_cursor`, `shader_drawn_a/b`, `shader_invalidate()`
+**Defines added:** `SHADER_NEAREST`, `SHADER_SHARP`, `SHADER_COUNT`, `SM_R0/RW/C0/BH/COL_LO/HI`
 
 ---
 

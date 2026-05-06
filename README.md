@@ -1,7 +1,7 @@
 # HowBoyMatsu
 A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the GnuBoy project.
 
-*Last updated: May 5, 2026*
+*Last updated: May 5, 2026 (session 4)*
 
 ---
 
@@ -20,7 +20,7 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 - **Clean launcher exit** — press F1 to save and return to the Tanmatsu launcher
 - **Return to ROM selector** — press Backspace during gameplay to save and return to the ROM selector without a hardware restart
 - **Button layout switcher** — press F2 to open a layout menu; choose Default (a/d) or WASD (w/a/s/d + ;/[)
-- **Soft reset** — press F3 to reset the current game back to its title screen (SRAM saves preserved)
+- **Soft reset** — press F1 to reset the current game back to its title screen (SRAM saves preserved)
 
 ## Button Mapping
 
@@ -49,7 +49,7 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 | W / A / S / D | D-pad Up / Left / Down / Right |
 | ; key | Game Boy A |
 | [ key | Game Boy B |
-| Enter / Space / ESC / F1 / F4 / F5 / F6 | Same as Default |
+| Enter / Space / ESC / F1 / F2 / F4 / F5 / F6 | Same as Default |
 
 ## Save States
 Press **F4** to open the save state menu. The game continues running in the background.
@@ -75,7 +75,7 @@ The ROM selector displays all `.gb` and `.gbc` files found in `/sdcard/roms/`. N
 Press **Backspace** at any time during gameplay to save SRAM/RTC and return to the ROM selector without a hardware restart.
 
 ## Rewind
-Press **F5** to start rewinding gameplay. The last ~3 seconds of play (20 snapshots, one every 10 frames) is stored in PSRAM. Press **F5 again** to resume from the rewound point.
+Press **F5** to start rewinding gameplay. The last ~10 seconds of play (40 snapshots, one every 15 frames) is stored in PSRAM. Press **F5 again** to resume from the rewound point.
 
 - Audio is muted during rewind
 - In-game saves (SRAM) are fully protected — a backup is taken when rewind starts and restored on exit, so no save data can be corrupted regardless of how far you rewind
@@ -101,7 +101,7 @@ Place `.gb` and `.gbc` ROM files in `/sdcard/roms/` on your SD card. Save files 
 | # | Feature | Notes |
 |---|---------|-------|
 | 1 | ~~**Button Config Swap**~~ | ✅ Done — F2 menu: Default / WASD |
-| 2 | ~~**Soft Reset**~~ | ✅ Done — F3 resets game to title screen (SRAM preserved) |
+| 2 | ~~**Soft Reset**~~ | ✅ Done — F1 resets game to title screen (SRAM preserved) |
 | 3 | ~~**Reverse Gameplay**~~ | ✅ Done — F5 rewind, SRAM-safe |
 | 4 | **Internal Resolution Scaling** | Dynamic `SCALE` factor beyond 1:1 |
 | 5 | **Texture Filtering / Shaders** | Post-process pass on PAX framebuffer |

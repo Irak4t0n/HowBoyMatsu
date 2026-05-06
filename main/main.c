@@ -186,12 +186,15 @@ static volatile int  lm_cursor         = 0;
 static volatile int  lm_drawn_a        = 0;
 static volatile int  lm_drawn_b        = 0;
 static inline void lm_invalidate(void) { lm_drawn_a = 0; lm_drawn_b = 0; }
+
+
+
 static volatile int  ff_speed = 0; // 0=1x 1=2x 2=3x
 
 // Rewind: circular PSRAM snapshot buffer
-#define REWIND_SLOTS      20
+#define REWIND_SLOTS      40
 #define REWIND_STATE_SZ   (96*1024)
-#define REWIND_SNAP_FREQ  10
+#define REWIND_SNAP_FREQ  15
 static uint8_t  *rewind_state_buf   = NULL;
 static uint16_t *rewind_pix_buf     = NULL;
 static uint8_t  *rewind_sram_backup = NULL;  // protects in-game saves during rewind
@@ -505,13 +508,12 @@ void blit(void) {
 // Draw the GBC screen scaled up onto the Tanmatsu display
 static uint16_t scaled_row_565[480];
 
+
 void draw_gbc_screen(void) {
-    const int GBC_W   = 160;
-    const int GBC_H   = 144;
-    const int PHYS_W  = 480;
-    const int H_SCALE = 3;
+    const int GBC_W  = 160;
+    const int GBC_H  = 144;
+    const int PHYS_W = 480;
     const int V_SCALE = 5;
-    const int X_OFF   = 0;  // no padding, fill full width
 
     xSemaphoreTake(sem_frame_done, portMAX_DELAY);
     uint16_t *phys = (uint16_t *)((active_render_buf == 0) ? render_buf_b : render_buf_a);
@@ -520,12 +522,10 @@ void draw_gbc_screen(void) {
     if (!init_done) {
         memset(render_buf_a, 0, PHYS_W * 800 * 2);
         memset(render_buf_b, 0, PHYS_W * 800 * 2);
-        memset(scaled_row_565, 0, X_OFF * 2);
-        memset(scaled_row_565 + X_OFF + GBC_H * H_SCALE, 0, X_OFF * 2);
         init_done = 1;
     }
 
-    // When a menu is open, skip its rect so pre-rendered pixels persist across frames.
+    // Which menus are open (their rects must be preserved across frames)
     int menu_open = (ss_state == SS_MENU_OPEN || ss_state == SS_MENU_SAVING || ss_state == SS_MENU_LOADING);
     int lm_open   = layout_menu_open;
 
@@ -1036,8 +1036,6 @@ void doevents(void) {
                         ss_menu_invalidate();
                     }
                     break;
-                case BSP_INPUT_NAVIGATION_KEY_F3:
-                    break;
                 default: break;
             }
         } else if (event.type == INPUT_EVENT_TYPE_KEYBOARD) {
@@ -1260,6 +1258,7 @@ static void draw_layout_menu(uint8_t *buf) {
         ss_text(p, labels[i], R0+8+CW*2, ic, SC, tcol);
     }
 }
+
 
 // Pre-rendered menu background cache
 static uint8_t *ss_bg_cache = NULL;
