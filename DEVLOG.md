@@ -1,7 +1,7 @@
 # HowBoyMatsu Development Log
 
 ## Project Overview
-GBC emulator for Tanmatsu/ESP32-P4, branched from GnuBoy. Main source: `main/main.c`.
+GBC emulator for Tanmatsu/ESP32-P4, branched from GnuBoy. Sources: `main/main.c`, `main/menu.c`, `main/rom_selector.c`, `main/config.h`.
 
 **Build:** `cd ~/HowBoyMatsu/HowBoyMatsu && make build DEVICE=tanmatsu`
 **Upload:** `cd ~/Documents/HowBoyMatsu && sudo chmod 666 /dev/ttyACM1 && cd badgelink/tools && sudo ./badgelink.sh appfs upload application "HowBoyMatsu" 0 /home/irak4t0n/HowBoyMatsu/HowBoyMatsu/build/tanmatsu/application.bin`
@@ -168,6 +168,58 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 6. Overclocking
 7. Netplay
 8. Input Mapping Profiles
+
+---
+
+## Session May 6 2026 — Codebase Refactor
+
+### Motivation
+Advice from an experienced coder: split the 1,988-line monolith into multiple C files, extract all `#define` constants to a header, and clean up nested if-blocks.
+
+### Changes
+
+**Deleted:** All `.save` files removed from version control — redundant with git.
+
+**New file: `main/config.h`**
+All `#define` constants extracted from `main.c`:
+- Display and GBC dimensions (`GBC_WIDTH`, `GBC_HEIGHT`, `PHYS_W`, `PHYS_H`)
+- Save state menu geometry and state constants
+- Layout and scale menu geometry constants
+- Scale mode values (`SCALE_FILL`, `SCALE_FIT`, `SCALE_3X`)
+- Rewind parameters (`REWIND_SLOTS`, `REWIND_STATE_SZ`, `REWIND_SNAP_FREQ`)
+- ROM directory and list size
+
+**New files: `main/menu.c` + `main/menu.h`**
+All save-state, scale, and layout menu code extracted from `main.c`:
+- Global state for all three menus
+- `SS_FONT[128][5]` sparse bitmap font table
+- Drawing primitives: `ss_rect`, `ss_hline`, `ss_vline`, `ss_text`
+- `draw_ss_menu()`, `draw_scale_menu()`, `draw_layout_menu()`
+- `ss_io_task()` background IO handler
+
+**New files: `main/rom_selector.c` + `main/rom_selector.h`**
+ROM browser extracted from `main.c`:
+- `rom_list[]`, `rom_count`, `scan_roms()`, `rom_selector()`
+- Embedded `rom_font5x7[96][5]` bitmap font
+- Static drawing helpers: `rom_draw_text_direct`, `rom_fill_row_direct`, `rom_selector_draw_row`
+
+**`main/main.c`** — down from 1,988 to ~900 lines:
+- New `blit_row()` inline helper: collapsed 3 identical menu-skip if-chains (one per scale mode) into a single 10-line function called once per row
+- New `save_sram_and_return_selector()`: deduplicates the Backspace/ESC SRAM-save-and-exit block
+- New `draw_fps_overlay(uint8_t *buf)`: extracts the 65-line FPS renderer from `blit_task`
+- Dead code removed: `displayBuffer0/1`, `display_buf`, `gbc_keys`, `keybind[]`, duplicate bools, redundant ROM size fread loop
+- `displayBuffer[2]` restored as a global (required by `gnuboy/lcd.c` for LCD-disabled clear path)
+- `render_buf_a` made non-static (accessed by `rom_selector.c`)
+
+**`main/CMakeLists.txt`** — `menu.c` and `rom_selector.c` added to `SRCS`.
+
+### Files Changed
+- `main/config.h` — new
+- `main/menu.h`, `main/menu.c` — new
+- `main/rom_selector.h`, `main/rom_selector.c` — new
+- `main/main.c` — stripped and refactored
+- `main/CMakeLists.txt` — updated
+- Various `.save` files — deleted
 
 ---
 

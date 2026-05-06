@@ -7,6 +7,8 @@ endif()
 idf_component_register(
 	SRCS
 		"main.c"
+		"menu.c"
+		"rom_selector.c"
 	PRIV_REQUIRES
                 esp_mm
 		esp_lcd
