@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the 32x32 HowBoyMatsu launcher icon — no external dependencies."""
+"""Generate 16x16, 32x32, and 64x64 HowBoyMatsu launcher icons — no external dependencies."""
 import zlib, struct
 
 def make_png_rgba(pixels):
@@ -55,8 +55,35 @@ fill(19, 22, 22, 25, R)
 # B button (3×3, lower-left of A — classic GBC diagonal layout)
 fill(22, 25, 19, 22, r)
 
-# ── Write ────────────────────────────────────────────────────────────────────
-data = make_png_rgba(g)
-with open('icon.png', 'wb') as f:
-    f.write(data)
-print(f"icon.png written ({len(data)} bytes, 32x32 RGBA)")
+# ── Scale helpers ─────────────────────────────────────────────────────────────
+def scale_down(grid, factor):
+    """Nearest-neighbour downsample: take top-left pixel of each NxN block."""
+    return [[grid[r * factor][c * factor]
+             for c in range(len(grid[0]) // factor)]
+            for r in range(len(grid) // factor)]
+
+def scale_up(grid, factor):
+    """Nearest-neighbour upsample: each pixel becomes an NxN block."""
+    out = []
+    for row in grid:
+        expanded = [px for px in row for _ in range(factor)]
+        for _ in range(factor):
+            out.append(expanded)
+    return out
+
+# ── Write all three sizes ─────────────────────────────────────────────────────
+for size, pixels in [
+    (16, scale_down(g, 2)),
+    (32, g),
+    (64, scale_up(g, 2)),
+]:
+    data = make_png_rgba(pixels)
+    fname = f'icon-{size}x{size}.png'
+    with open(fname, 'wb') as f:
+        f.write(data)
+    print(f"{fname} written ({len(data)} bytes)")
+
+# Also keep icon.png (32x32) for the badge /int/apps path
+import shutil
+shutil.copy('icon-32x32.png', 'icon.png')
+print("icon.png (32x32 copy) written")
