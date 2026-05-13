@@ -252,6 +252,42 @@ ROM browser extracted from `main.c`:
 
 ---
 
+## Session May 13 2026 — Fix: Default Layout Button Input (session 9)
+
+### Problem
+In the default layout, the `A` key (GBC A button / jump) did not behave correctly:
+- Jump height was too short at normal speed compared to the WASD `;` equivalent
+- Pressing A rapidly for a double jump had no effect
+- Holding A gave inconsistently higher jumps at fast-forward speeds than at normal speed
+
+### Root Cause — Three layered bugs
+
+**Bug 1: Timer too short.** The original 100 ms wall-clock auto-release timer meant PAD_A was held for only ~6 emulated frames — not enough for a full-height jump in most GBC platformers.
+
+**Bug 2: Wall-clock timer was FF-speed-dependent.** The timer was measured in real milliseconds (`xTaskGetTickCount`). At 5× fast-forward the same 100 ms of real time covers ~30 emulated frames instead of 6, so the jump height was much higher at FF than at normal speed.
+
+**Bug 3: Key-repeat events caused PAD_A flicker.** The rapid re-press detection (`key_release_frames[x] > 0` → force release + defer) fired on every OS key-repeat event while A was physically held, making PAD_A toggle on/off ~30 times per second. The game never saw a stable button hold.
+
+### Fix
+Switched A and D in the default layout to **scancode polling** (same mechanism WASD uses for all its buttons). `bsp_input_read_scancode` reads the physical hardware key state every emulated frame — it is immune to key-repeat character events and tracks hold/release accurately:
+
+```c
+} else {
+    // Default layout: A and D scancodes for PAD_A/PAD_B — hold-accurate, no repeat flicker
+    bsp_input_read_scancode(BSP_INPUT_SCANCODE_A, &st); pad_set(PAD_A, (int)st);
+    bsp_input_read_scancode(BSP_INPUT_SCANCODE_D, &st); pad_set(PAD_B, (int)st);
+}
+```
+
+START/SELECT (Enter/Space) still use a frame-countdown auto-release timer (`KEY_HOLD_FRAMES = 18`) since those have no scancode equivalent and don't require variable-hold behaviour.
+
+The `pending_press_mask` / deferred re-press mechanism was removed — it is no longer needed because scancode polling naturally produces the 1→0→1 joypad transition required for double jumps whenever the player releases and re-presses the key.
+
+### Files Changed
+- `main/main.c` — `doevents()` input system overhauled
+
+---
+
 ## Session May 6 2026 — Launcher Icon Fix
 
 ### Fix: Off-centre screen element in launcher icon

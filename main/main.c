@@ -538,30 +538,43 @@ void ev_poll(void) { doevents(); }
 
 // ── Input handling ────────────────────────────────────────────────────────────
 
+// KEY_HOLD_FRAMES: how many emulated frames A/B/START/SELECT stay pressed after a tap.
+// Frame-based so jump height is identical at 1x and any fast-forward speed.
+// 18 frames ≈ 300 ms at 60 fps — enough for a full-height jump in GBC platformers.
+#define KEY_HOLD_FRAMES 18
+
 void doevents(void) {
     bsp_input_event_t event;
-    static uint32_t key_release_time[8] = {0};
-    static byte     key_pads[8] = {PAD_A, PAD_B, PAD_START, PAD_SELECT,
-                                    PAD_UP, PAD_DOWN, PAD_LEFT, PAD_RIGHT};
+    // Frame-countdown auto-release: decremented once per doevents() call (= once per
+    // emulated frame), so hold duration is speed-independent.
+    // key_release_frames[2] = START, [3] = SELECT — frame-countdown auto-release for
+    // char-event keys that have no scancode. A/B use scancode polling below instead.
+    static uint8_t  key_release_frames[4] = {0};
+    static byte     key_pads[4] = {PAD_A, PAD_B, PAD_START, PAD_SELECT};
 
-    // Auto-release timed keys
-    uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
-    for (int i = 0; i < 4; i++) {
-        if (key_release_time[i] > 0 && now >= key_release_time[i]) {
-            pad_set(key_pads[i], 0);
-            key_release_time[i] = 0;
+    // Auto-release START/SELECT: count down one frame at a time — FF speed has no effect
+    for (int i = 2; i < 4; i++) {
+        if (key_release_frames[i] > 0) {
+            key_release_frames[i]--;
+            if (key_release_frames[i] == 0) pad_set(key_pads[i], 0);
         }
     }
 
-    // WASD layout: poll scancode state each frame for accurate hold/release
-    if (key_layout == 1 && !layout_menu_open) {
+    // Poll A/B button scancodes every frame — immune to key-repeat char events
+    if (!layout_menu_open) {
         bool st;
-        bsp_input_read_scancode(BSP_INPUT_SCANCODE_W,         &st); pad_set(PAD_UP,    (int)st);
-        bsp_input_read_scancode(BSP_INPUT_SCANCODE_S,         &st); pad_set(PAD_DOWN,  (int)st);
-        bsp_input_read_scancode(BSP_INPUT_SCANCODE_A,         &st); pad_set(PAD_LEFT,  (int)st);
-        bsp_input_read_scancode(BSP_INPUT_SCANCODE_D,         &st); pad_set(PAD_RIGHT, (int)st);
-        bsp_input_read_scancode(BSP_INPUT_SCANCODE_SEMICOLON, &st); pad_set(PAD_A,     (int)st);
-        bsp_input_read_scancode(BSP_INPUT_SCANCODE_LEFTBRACE, &st); pad_set(PAD_B,     (int)st);
+        if (key_layout == 1) {
+            bsp_input_read_scancode(BSP_INPUT_SCANCODE_W,         &st); pad_set(PAD_UP,    (int)st);
+            bsp_input_read_scancode(BSP_INPUT_SCANCODE_S,         &st); pad_set(PAD_DOWN,  (int)st);
+            bsp_input_read_scancode(BSP_INPUT_SCANCODE_A,         &st); pad_set(PAD_LEFT,  (int)st);
+            bsp_input_read_scancode(BSP_INPUT_SCANCODE_D,         &st); pad_set(PAD_RIGHT, (int)st);
+            bsp_input_read_scancode(BSP_INPUT_SCANCODE_SEMICOLON, &st); pad_set(PAD_A,     (int)st);
+            bsp_input_read_scancode(BSP_INPUT_SCANCODE_LEFTBRACE, &st); pad_set(PAD_B,     (int)st);
+        } else {
+            // Default layout: A and D scancodes for PAD_A/PAD_B — hold-accurate, no repeat flicker
+            bsp_input_read_scancode(BSP_INPUT_SCANCODE_A, &st); pad_set(PAD_A, (int)st);
+            bsp_input_read_scancode(BSP_INPUT_SCANCODE_D, &st); pad_set(PAD_B, (int)st);
+        }
     }
 
     while (xQueueReceive(input_event_queue, &event, 0) == pdTRUE) {
@@ -656,8 +669,7 @@ void doevents(void) {
                         lm_invalidate();
                         pad_set(PAD_UP, 0); pad_set(PAD_DOWN, 0);
                         pad_set(PAD_LEFT, 0); pad_set(PAD_RIGHT, 0);
-                        key_release_time[4] = key_release_time[5] =
-                        key_release_time[6] = key_release_time[7] = 0;
+                        key_release_frames[2] = key_release_frames[3] = 0;
                         ESP_LOGI(TAG, "Layout: %s", key_layout ? "WASD" : "Default");
                         break;
                     case BSP_INPUT_NAVIGATION_KEY_F2:
@@ -810,28 +822,17 @@ void doevents(void) {
                     lm_invalidate();
                     pad_set(PAD_UP, 0); pad_set(PAD_DOWN, 0);
                     pad_set(PAD_LEFT, 0); pad_set(PAD_RIGHT, 0);
-                    for (int ki = 4; ki < 8; ki++) key_release_time[ki] = 0;
+                    key_release_frames[2] = key_release_frames[3] = 0;
                     ESP_LOGI(TAG, "Layout: %s", key_layout ? "WASD" : "Default");
                 }
                 continue;
             }
-            uint32_t release_at = now + 100;
-            if (key_layout == 0) {
-                switch (event.args_keyboard.ascii) {
-                    case 'a': case 'A': pad_set(PAD_A, 1);      key_release_time[0] = release_at; break;
-                    case 'd': case 'D': pad_set(PAD_B, 1);      key_release_time[1] = release_at; break;
-                    case '\n': case '\r': pad_set(PAD_START, 1); key_release_time[2] = release_at; break;
-                    case ' ':           pad_set(PAD_SELECT, 1); key_release_time[3] = release_at; break;
-                    case '\b': case 127: save_sram_and_return_selector(); break;
-                    default: break;
-                }
-            } else {
-                switch (event.args_keyboard.ascii) {
-                    case '\n': case '\r': pad_set(PAD_START, 1);  key_release_time[2] = release_at; break;
-                    case ' ':            pad_set(PAD_SELECT, 1); key_release_time[3] = release_at; break;
-                    case '\b': case 127: save_sram_and_return_selector(); break;
-                    default: break;
-                }
+            // A/B are handled by scancode polling — only START, SELECT, and system keys here
+            switch (event.args_keyboard.ascii) {
+                case '\n': case '\r': pad_set(PAD_START,  1); key_release_frames[2] = KEY_HOLD_FRAMES; break;
+                case ' ':            pad_set(PAD_SELECT, 1); key_release_frames[3] = KEY_HOLD_FRAMES; break;
+                case '\b': case 127: save_sram_and_return_selector(); break;
+                default: break;
             }
         }
     }
