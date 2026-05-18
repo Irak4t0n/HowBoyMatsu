@@ -1,7 +1,7 @@
 # HowBoyMatsu
 A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the GnuBoy project.
 
-*Last updated: May 13, 2026 (session 9)*
+*Last updated: May 17, 2026 (session 10)*
 
 ---
 
@@ -10,7 +10,7 @@ A Game Boy Color emulator for the Tanmatsu handheld/Konsool, derived from the Gn
 - **Full screen display** — stretched to fill the 800×480 display in landscape orientation
 - **Stereo audio** — via ES8156 DAC at 44100Hz with dedicated audio task
 - **ROM selector** — navigate with D-pad, launch with A or Enter
-- **SRAM save/load** — in-game saves persist across sessions
+- **SRAM save/load** — in-game saves persist across sessions for all games with RAM (battery flag no longer required)
 - **RTC save/load** — real-time clock state preserved (for Pokémon Gold/Silver/Crystal)
 - **Autosave** — SRAM saved automatically every 5 minutes
 - **Scale modes** — F3 menu: STRETCH (fills screen), FIT (aspect-correct 533×480), 3X (integer 3× pixel-perfect centered)
@@ -101,6 +101,7 @@ Place `.gb` and `.gbc` ROM files in `/sdcard/roms/` on your SD card. Save files 
 - Slight audio distortion inherent to gnuboy's sound synthesis engine
 - Brief turquoise flash when returning to the launcher (launcher initialization)
 - Audio is muted during fast forward
+- SD card mounted with 5 file descriptors — avoid opening external files during emulation
 
 ---
 
@@ -120,6 +121,7 @@ Place `.gb` and `.gbc` ROM files in `/sdcard/roms/` on your SD card. Save files 
 
 ## Notes
 - Tested with Pokémon Gold, Pokémon Crystal, Super Mario Bros. Deluxe, Metal Gear Solid, Legend of Zelda: Link's Awakening
+- Both `.gb` and `.gbc` ROM files are supported
 - Built with ESP-IDF v5.5.1 for ESP32-P4
 
 ---

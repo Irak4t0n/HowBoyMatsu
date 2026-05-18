@@ -305,7 +305,7 @@ int rom_load(byte* data)
 
 int sram_load(FILE* f)
 {
-	if (!mbc.batt) return -1;
+	if (!mbc.ramsize) return -1;
 
 	/* Consider sram loaded at this point, even if file doesn't exist */
 	ram.loaded = 1;
@@ -321,7 +321,7 @@ int sram_load(FILE* f)
 int sram_save(FILE* f)
 {
 	/* If we crash before we ever loaded sram, DO NOT SAVE! */
-	if (!mbc.batt || !ram.loaded || !mbc.ramsize)
+	if (!ram.loaded || !mbc.ramsize)
 		return -1;
     
     if (f == NULL) return 0;
@@ -373,15 +373,15 @@ void state_load(int n)
 }
 
 void rtc_save(FILE* f) {
-	if (!rtc.batt) return;
     if (f == NULL) return;
+	if (!rtc.batt) { fclose(f); return; }
 	rtc_save_internal(f);
 	fclose(f);
 }
 
 void rtc_load(FILE* f) {
-	if (!rtc.batt) return;
     if (f == NULL) return;
+	if (!rtc.batt) { fclose(f); return; }
 	rtc_load_internal(f);
 	fclose(f);
 }

@@ -190,7 +190,15 @@ void scan_roms(void) {
         int len = strlen(name);
         if (len > 4) {
             char *ext = name + len - 4;
-            if (strcasecmp(ext, ".gbc") == 0 || strcasecmp(ext, ".gb") == 0) {
+            if (strcasecmp(ext, ".gbc") == 0) {
+                snprintf(rom_list[rom_count], sizeof(rom_list[0]), "%s/%s", ROMS_DIR, name);
+                rom_count++;
+                continue;
+            }
+        }
+        if (len > 3) {
+            char *ext = name + len - 3;
+            if (strcasecmp(ext, ".gb") == 0) {
                 snprintf(rom_list[rom_count], sizeof(rom_list[0]), "%s/%s", ROMS_DIR, name);
                 rom_count++;
             }

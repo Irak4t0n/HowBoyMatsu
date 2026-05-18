@@ -171,6 +171,44 @@ static SemaphoreHandle_t sem_audio_shutdown = NULL;
 
 ---
 
+## Session May 17 2026 — Fix: SRAM saves broken for non-Pokemon games (file descriptor leak + battery flag gate)
+
+### Problem
+In-game saves (SRAM) only persisted for Pokemon games. Every other game lost its save data after reloading. Serial log showed:
+```
+E (377908) vfs_fat: open: no free file descriptors
+```
+
+### Root Cause — Two bugs
+
+**Bug 1 (primary): File descriptor leak in `rtc_save()`/`rtc_load()`.** Both functions accepted a caller-opened `FILE*` but returned early without calling `fclose()` when `rtc.batt == 0`. The autosave in `vid_end()` runs every ~18 000 frames (~5 min) and opens an RTC file each cycle. For non-RTC games (`rtc.batt = 0`), each cycle leaked one FD. The SD card is mounted with `max_files = 5`, so after ~25 minutes all file descriptors were exhausted and every subsequent `fopen` (including SRAM saves) failed silently.
+
+Pokemon games have `rtc.batt = 1` (MBC3+TIMER), so `rtc_save` always reached its `fclose` — no leak. Every other game has `rtc.batt = 0`, triggering the leak.
+
+**Bug 2: `sram_load()`/`sram_save()` gated on `mbc.batt`.** Games whose cartridge header doesn't declare battery-backed SRAM (e.g. MBC5+RAM type `0x1A`, MBC1+RAM type `0x02`, or ROMs with non-standard headers) had `mbc.batt = 0` and were unconditionally blocked from saving. The battery flag is a physical hardware concept (capacitor keeping SRAM alive on power-off) that has no meaning in an emulator.
+
+### Fix
+
+**File descriptor leak** (`components/gnuboy/loader.c`): `rtc_save()` and `rtc_load()` now call `fclose(f)` before returning when `rtc.batt == 0`, ensuring the caller's file handle is always closed:
+```c
+void rtc_save(FILE* f) {
+    if (f == NULL) return;
+    if (!rtc.batt) { fclose(f); return; }
+    rtc_save_internal(f);
+    fclose(f);
+}
+```
+
+**Battery flag gate** (`components/gnuboy/loader.c`): `sram_load()` now gates on `!mbc.ramsize` instead of `!mbc.batt`. `sram_save()` removed the `!mbc.batt` check entirely — now saves for any game that has RAM and has been loaded.
+
+**Bonus fix — `.gb` ROM scanner** (`main/rom_selector.c`): `scan_roms()` checked the last 4 characters against both `.gbc` (4 chars) and `.gb` (3 chars). The `.gb` comparison always failed (e.g. `"e.gb" != ".gb"`). Split into separate 4-char and 3-char checks so `.gb` files are now correctly discovered.
+
+### Files Changed
+- `components/gnuboy/loader.c` — FD leak fix in `rtc_save`/`rtc_load`; battery gate removed from `sram_load`/`sram_save`
+- `main/rom_selector.c` — `.gb` extension matching fixed
+
+---
+
 ## Session May 6 2026 — Fix: Launcher icon executable metadata
 
 ### Problem
